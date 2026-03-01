@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a73e8">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MedLedger">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <title>MedLedger</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Top Bar -->
+  <header class="top-bar">
+    <h1>MedLedger</h1>
+    <button id="installBtn" class="install-btn" style="display:none">Install</button>
+  </header>
+
+  <!-- Tab Navigation -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="today">Today</button>
+    <button class="tab-btn" data-tab="meds">My Meds</button>
+    <button class="tab-btn" data-tab="history">History</button>
+  </nav>
+
+  <!-- TODAY TAB -->
+  <main id="tab-today" class="tab-content active">
+    <div class="date-header" id="todayDate"></div>
+    <div id="todayList" class="card-list">
+      <div class="empty-state" id="todayEmpty">
+        <div class="empty-icon">💊</div>
+        <p>No medications scheduled</p>
+        <p class="sub">Tap + to add your first medication</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- MY MEDS TAB -->
+  <main id="tab-meds" class="tab-content">
+    <div id="medsList" class="card-list">
+      <div class="empty-state" id="medsEmpty">
+        <div class="empty-icon">📋</div>
+        <p>No medications yet</p>
+        <p class="sub">Tap + to get started</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- HISTORY TAB -->
+  <main id="tab-history" class="tab-content">
+    <div id="historyList" class="card-list">
+      <div class="empty-state" id="historyEmpty">
+        <div class="empty-icon">📅</div>
+        <p>No history yet</p>
+        <p class="sub">Start tracking to see your history</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- FAB (Add Button) -->
+  <button class="fab" id="addBtn" aria-label="Add medication">+</button>
+
+  <!-- Add Medication Modal -->
+  <div class="modal-overlay" id="addModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Add Medication</h2>
+        <button class="modal-close" id="closeModal">&times;</button>
+      </div>
+      <form id="addForm">
+        <div class="form-group">
+          <label for="medName">Medication Name *</label>
+          <input type="text" id="medName" placeholder="e.g. Ibuprofen" required autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="medDosage">Dosage *</label>
+          <input type="text" id="medDosage" placeholder="e.g. 200mg" required autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="medFrequency">Frequency</label>
+            <select id="medFrequency">
+              <option value="daily">Daily</option>
+              <option value="twice">Twice daily</option>
+              <option value="three">3x daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="asneeded">As needed</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="medTime">Time</label>
+            <input type="time" id="medTime" value="08:00">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="medNotes">Notes</label>
+          <input type="text" id="medNotes" placeholder="e.g. Take with food" autocomplete="off">
+        </div>
+        <button type="submit" class="btn-primary">Add Medication</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Detail/Edit Modal -->
+  <div class="modal-overlay" id="detailModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="detailTitle">Medication</h2>
+        <button class="modal-close" id="closeDetail">&times;</button>
+      </div>
+      <div id="detailBody"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
