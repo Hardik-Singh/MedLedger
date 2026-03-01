@@ -24,8 +24,9 @@ from backend.risk_engine import calculate_patient_risk
 # To install: pip install browser-use langchain-anthropic && playwright install chromium
 
 try:
-    from browser_use import Agent, Browser, BrowserConfig
-    from browser_use.controller.service import Controller
+    from browser_use.agent.service import Agent
+    from browser_use.browser.session import BrowserSession
+    from browser_use.controller import Controller
     from langchain_anthropic import ChatAnthropic
     HAS_BROWSER_USE = True
 except ImportError:
@@ -523,16 +524,18 @@ async def run_agent_task(
     register_tools(controller, agent_id, broadcast_fn, action_count, patients_touched)
 
     llm = ChatAnthropic(model_name="claude-sonnet-4-20250514", timeout=120, stop=None)
-    browser = Browser(config=BrowserConfig(headless=True, disable_security=True))
+    browser_session = BrowserSession(headless=True, disable_security=True)
 
     system_msg = await _build_system_prompt(agent_name, task, agent_id)
 
     agent = Agent(
-        task=f"{system_msg}\n\nTask: {task}",
+        task=task,
         llm=llm,
         controller=controller,
-        browser=browser,
+        browser_session=browser_session,
+        extend_system_message=system_msg,
         use_vision=True,
+        max_actions_per_step=5,
     )
 
     try:
@@ -557,7 +560,7 @@ async def run_agent_task(
                 },
             })
     finally:
-        await browser.close()
+        await browser_session.close()
 
 
 # ──────────────────────────── Multi-Agent Workflow ────────────────────────────
@@ -612,16 +615,18 @@ async def run_multi_agent(
         register_tools(controller, agent_id, broadcast_fn, action_count, patients_touched)
 
         llm = ChatAnthropic(model_name="claude-sonnet-4-20250514", timeout=120, stop=None)
-        browser = Browser(config=BrowserConfig(headless=True, disable_security=True))
+        browser_session = BrowserSession(headless=True, disable_security=True)
 
         system_msg = await _build_system_prompt(agent_name, task, agent_id, step=i+1, total_steps=len(agents_config))
 
         agent = Agent(
-            task=f"{system_msg}\n\nTask: {task}",
+            task=task,
             llm=llm,
             controller=controller,
-            browser=browser,
+            browser_session=browser_session,
+            extend_system_message=system_msg,
             use_vision=True,
+            max_actions_per_step=5,
         )
 
         try:
@@ -647,7 +652,7 @@ async def run_multi_agent(
                 await broadcast_fn({"type": "action", **complete_action})
                 await broadcast_fn({"type": "task_complete", "result": str(result), "agent_name": agent_name, "summary": summary})
         finally:
-            await browser.close()
+            await browser_session.close()
 
     if broadcast_fn:
         await broadcast_fn({"type": "multi_agent_complete", "results": results})

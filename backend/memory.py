@@ -3,7 +3,7 @@ MedLedger Memory Layer — Supermemory integration for persistent agent memory.
 Agents store and recall patient interactions across sessions using container_tags
 for per-patient memory isolation.
 
-SDK: pip install supermemory
+SDK: pip install supermemory (v3.27+)
 API Key: https://console.supermemory.ai
 """
 
@@ -39,7 +39,8 @@ def reset_client():
 
 
 async def store_interaction(agent_id: str, action_type: str, payload: dict, result: str = ""):
-    """Store a patient interaction as a memory. Uses container_tags for patient-level isolation."""
+    """Store a patient interaction as a memory.
+    Uses container_tags for per-patient isolation and metadata for filtering."""
     client = get_client()
     if not client:
         return None
@@ -94,20 +95,19 @@ async def store_interaction(agent_id: str, action_type: str, payload: dict, resu
 
 
 async def recall_patient(agent_id: str, patient_name: str = "", patient_id: str = "", limit: int = 5) -> str:
-    """Recall memories about a patient from past sessions."""
+    """Recall memories about a patient from past sessions.
+    Uses search.memories() with container_tag for per-patient isolation."""
     client = get_client()
     if not client:
         return ""
 
     query = f"patient {patient_name}" if patient_name else f"patient #{patient_id}"
-    tags = ["medledger"]
-    if patient_id:
-        tags.append(f"patient_{patient_id}")
+    tag = f"patient_{patient_id}" if patient_id else "medledger"
 
     try:
-        results = await client.search.documents(
+        results = await client.search.memories(
             q=f"{query} medical record interactions history",
-            container_tags=tags,
+            container_tag=tag,
             limit=limit,
         )
         if not results or not hasattr(results, "results") or not results.results:
@@ -122,7 +122,8 @@ async def recall_patient(agent_id: str, patient_name: str = "", patient_id: str 
 
 
 async def recall_context(agent_id: str, task: str, limit: int = 5) -> str:
-    """Recall relevant memories for a given task."""
+    """Recall relevant memories for a given task.
+    Uses search.documents() for broad context across all patients."""
     client = get_client()
     if not client:
         return ""
@@ -132,12 +133,13 @@ async def recall_context(agent_id: str, task: str, limit: int = 5) -> str:
             q=task,
             container_tags=["medledger"],
             limit=limit,
+            include_summary=True,
         )
         if not results or not hasattr(results, "results") or not results.results:
             return ""
         memories = []
         for r in results.results:
-            content = getattr(r, "content", "") or getattr(r, "text", "") or str(r)
+            content = getattr(r, "summary", "") or getattr(r, "content", "") or getattr(r, "text", "") or str(r)
             memories.append(f"- {content}")
         return "\n".join(memories)
     except Exception:
@@ -145,7 +147,8 @@ async def recall_context(agent_id: str, task: str, limit: int = 5) -> str:
 
 
 async def get_patient_profile(patient_id: str) -> dict:
-    """Get supermemory profile for a patient — static facts + dynamic context."""
+    """Get supermemory profile for a patient — static facts + dynamic context.
+    Uses client.profile() with container_tag for patient-level profile."""
     client = get_client()
     if not client:
         return {}
