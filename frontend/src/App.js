@@ -405,7 +405,7 @@ function App() {
               {/* tabs */}
               <div className="tabs">
                 <button className={`tab ${viewTab==='human'?'tab-on':''}`} onClick={()=>setViewTab('human')}>Human View</button>
-                <button className={`tab ${viewTab==='crypto'?'tab-on':''}`} onClick={()=>setViewTab('crypto')}>Crypto View</button>
+                <button className={`tab ${viewTab==='crypto'?'tab-on':''}`} onClick={()=>setViewTab('crypto')}>Audit View</button>
                 <div className="tab-spacer"/>
                 <button className="tab-close" onClick={()=>setOpenRunId(null)}>&times; Close</button>
               </div>
