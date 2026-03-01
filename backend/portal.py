@@ -71,6 +71,29 @@ STYLE = """
   .tag-update { background: #fef3c7; color: #92400e; }
   .tag-delete { background: #fee2e2; color: #991b1b; }
   .tag-create { background: #d1fae5; color: #065f46; }
+  /* vitals */
+  .vitals-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .vital-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 12px; text-align: center; }
+  .vital-card.v-high { border-color: #fbbf24; background: #fffbeb; }
+  .vital-card.v-low  { border-color: #f97316; background: #fff7ed; }
+  .vital-label { font-size: 10px; text-transform: uppercase; color: #718096; font-weight: 600; letter-spacing: 0.5px; }
+  .vital-value { font-size: 26px; font-weight: 700; color: #1e3a5f; margin: 4px 0; }
+  .vital-card.v-high .vital-value { color: #dc2626; }
+  .vital-card.v-low  .vital-value { color: #d97706; }
+  .vital-unit { font-size: 11px; color: #94a3b8; }
+  .vital-range { font-size: 10px; color: #a1a1aa; margin-top: 2px; }
+  /* labs */
+  .lab-status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .lab-normal { background: #d1fae5; color: #065f46; }
+  .lab-high   { background: #fee2e2; color: #991b1b; }
+  .lab-low    { background: #fef3c7; color: #92400e; }
+  /* appointments */
+  .appt-item { display: flex; align-items: center; gap: 16px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 8px; background: #f8fafc; }
+  .appt-date { font-weight: 700; color: #2563eb; min-width: 110px; font-size: 13px; }
+  .appt-type { font-weight: 600; color: #1e3a5f; }
+  .appt-doc  { color: #718096; font-size: 13px; }
+  .appt-note { font-size: 12px; color: #94a3b8; }
+  .section-title { color: #1e3a5f; margin-bottom: 14px; font-size: 16px; }
 </style>
 """
 
@@ -226,6 +249,14 @@ async def patient_detail(patient_id: int, request: Request):
         )
         history = await cursor2.fetchall()
 
+        cursor3 = await db.execute(
+            "SELECT * FROM lab_results WHERE patient_id = ? ORDER BY resulted_at DESC", (patient_id,))
+        labs = await cursor3.fetchall()
+
+        cursor4 = await db.execute(
+            "SELECT * FROM appointments WHERE patient_id = ? AND status = 'scheduled' ORDER BY scheduled_for ASC", (patient_id,))
+        appointments = await cursor4.fetchall()
+
     history_rows = ""
     for h in history:
         tag_class = "tag-update" if h["change_type"] == "UPDATE" else "tag-delete" if h["change_type"] == "DELETE" else "tag-create"
@@ -241,9 +272,58 @@ async def patient_detail(patient_id: int, request: Request):
     if history:
         history_section = f"""
         <div class="card">
-          <h3 style="margin-bottom:12px;color:#1e3a5f;">Version History</h3>
+          <h3 class="section-title">Version History</h3>
           <table class="history-table"><thead><tr><th>Action</th><th>Timestamp</th><th>Field</th><th>Old Value</th><th>New Value</th></tr></thead>
           <tbody>{history_rows}</tbody></table>
+        </div>"""
+
+    # ── Vitals & Labs section ──
+    vitals_section = ""
+    if labs:
+        # Build vitals cards for key readings
+        vitals_html = ""
+        lab_rows_html = ""
+        for lab in labs:
+            cls = "v-high" if lab["status"] == "high" else "v-low" if lab["status"] == "low" else ""
+            vitals_html += f"""<div class="vital-card {cls}">
+              <div class="vital-label">{lab['test_name']}</div>
+              <div class="vital-value">{lab['value']}</div>
+              <div class="vital-unit">{lab['unit']}</div>
+              <div class="vital-range">{lab['reference_range_low']}–{lab['reference_range_high']}</div>
+            </div>"""
+            status_cls = f"lab-{lab['status']}" if lab['status'] in ('normal','high','low') else 'lab-normal'
+            lab_rows_html += f"""<tr>
+              <td>{lab['test_name']}</td>
+              <td style="font-weight:600;">{lab['value']} {lab['unit']}</td>
+              <td>{lab['reference_range_low']}–{lab['reference_range_high']} {lab['unit']}</td>
+              <td><span class="lab-status {status_cls}">{lab['status']}</span></td>
+              <td>{lab['resulted_at']}</td>
+              <td style="color:#718096;font-size:12px;">{lab['ordered_by']}</td>
+            </tr>"""
+        vitals_section = f"""
+        <div class="card">
+          <h3 class="section-title">Vitals &amp; Lab Results</h3>
+          <div class="vitals-grid">{vitals_html}</div>
+          <table><thead><tr><th>Test</th><th>Result</th><th>Reference</th><th>Status</th><th>Date</th><th>Ordered By</th></tr></thead>
+          <tbody>{lab_rows_html}</tbody></table>
+        </div>"""
+
+    # ── Appointments section ──
+    appt_section = ""
+    if appointments:
+        appt_items = ""
+        for a in appointments:
+            dt = a['scheduled_for'][:16].replace('T', ' at ')
+            appt_items += f"""<div class="appt-item">
+              <span class="appt-date">{dt}</span>
+              <span class="appt-type">{a['appointment_type']}</span>
+              <span class="appt-doc">{a['doctor_name']}</span>
+              <span class="appt-note">{a['notes'] or ''}</span>
+            </div>"""
+        appt_section = f"""
+        <div class="card">
+          <h3 class="section-title">Upcoming Appointments</h3>
+          {appt_items}
         </div>"""
 
     deleted_banner = ""
@@ -278,6 +358,8 @@ async def patient_detail(patient_id: int, request: Request):
       <div style="margin-top:16px;"><label>Clinical Notes</label><p>{p['notes']}</p></div>
       <div style="margin-top:16px;"><label>Last Visit</label><p>{p['last_visit']}</p></div>
     </div>
+    {vitals_section}
+    {appt_section}
     {history_section}
     """
     return HTMLResponse(base(f"{p['first_name']} {p['last_name']}", body))
