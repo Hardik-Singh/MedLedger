@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 
-const WS_URL  = process.env.REACT_APP_WS_URL     || 'ws://localhost:8000/ws';
-const API_URL = process.env.REACT_APP_API_URL     || 'http://localhost:8000';
-const PORTAL  = process.env.REACT_APP_PORTAL_URL  || 'http://localhost:8001';
+const WS_URL  = process.env.REACT_APP_WS_URL  || 'ws://localhost:8000/ws';
+const API_URL = process.env.REACT_APP_API_URL  || 'http://localhost:8000';
 
 const DOT = {
   SEARCH:'#3b82f6', VIEW:'#94a3b8', UPDATE:'#f59e0b', DELETE:'#ef4444',
@@ -21,9 +20,9 @@ const SEED_RUNS = [
       { id:'s1a', action_type:'SEARCH', agent_id:'ARIA', timestamp:'2026-02-28T09:14:22Z', verified:true,
         payload:{query:'Sam Altman'}, hash:'a3f2c1de9b7842fd01e6c8a94b3d5f107e8a2c6d4b9f1e3a5c7d2b8f4a6e0c19', prev_hash:'GENESIS', signature:'MEUCIQDk7v2Hx9L...(P256)...base64==' },
       { id:'s1b', action_type:'VIEW', agent_id:'ARIA', timestamp:'2026-02-28T09:14:25Z', verified:true,
-        payload:{patient_id:1}, hash:'7b1cde45f8a23b6d9c4e0f1a2b3d5e7f8a9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e', prev_hash:'a3f2c1de9b7842fd01e6c8a94b3d5f107e8a2c6d4b9f1e3a5c7d2b8f4a6e0c19', signature:'MEUCIHm8Rp4Q...(P256)...base64==' },
+        payload:{patient_id:1, patient_name:'Sam Altman'}, hash:'7b1cde45f8a23b6d9c4e0f1a2b3d5e7f8a9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e', prev_hash:'a3f2c1de9b7842fd01e6c8a94b3d5f107e8a2c6d4b9f1e3a5c7d2b8f4a6e0c19', signature:'MEUCIHm8Rp4Q...(P256)...base64==' },
       { id:'s1c', action_type:'HISTORY', agent_id:'ARIA', timestamp:'2026-02-28T09:14:30Z', verified:true,
-        payload:{patient_id:1}, hash:'e9d4f8a2b3c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1', prev_hash:'7b1cde45f8a23b6d9c4e0f1a2b3d5e7f8a9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e', signature:'MEYCIQC3nL2x...(P256)...base64==' },
+        payload:{patient_id:1, patient_name:'Sam Altman'}, hash:'e9d4f8a2b3c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1', prev_hash:'7b1cde45f8a23b6d9c4e0f1a2b3d5e7f8a9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e', signature:'MEYCIQC3nL2x...(P256)...base64==' },
     ],
   },
   {
@@ -33,12 +32,12 @@ const SEED_RUNS = [
       { id:'s2a', action_type:'SEARCH', agent_id:'DELTA', timestamp:'2026-02-28T10:02:11Z', verified:true,
         payload:{query:'Sam Altman'}, hash:'1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b', prev_hash:'e9d4f8a2b3c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1', signature:'MEQCIFkR7z...(P256)...base64==' },
       { id:'s2b', action_type:'VIEW', agent_id:'DELTA', timestamp:'2026-02-28T10:02:14Z', verified:true,
-        payload:{patient_id:1}, hash:'2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c', prev_hash:'1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b', signature:'MEUCIQDpW...(P256)...base64==' },
+        payload:{patient_id:1, patient_name:'Sam Altman'}, hash:'2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c', prev_hash:'1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b', signature:'MEUCIQDpW...(P256)...base64==' },
       { id:'s2c', action_type:'UPDATE', agent_id:'DELTA', timestamp:'2026-02-28T10:02:19Z', verified:true,
         payload:{patient_id:1, patient_name:'Sam Altman', field:'medications', old_value:'Claritin 10mg', new_value:'Zyrtec 10mg', warnings:null},
         hash:'3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d', prev_hash:'2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c', signature:'MEYCIQD8a...(P256)...base64==' },
       { id:'s2d', action_type:'HISTORY', agent_id:'DELTA', timestamp:'2026-02-28T10:02:23Z', verified:true,
-        payload:{patient_id:1}, hash:'4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e', prev_hash:'3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d', signature:'MEUCIHnQ...(P256)...base64==' },
+        payload:{patient_id:1, patient_name:'Sam Altman'}, hash:'4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e', prev_hash:'3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d', signature:'MEUCIHnQ...(P256)...base64==' },
     ],
   },
 ];
@@ -49,35 +48,35 @@ function desc(a) {
   const p = a.payload || {};
   switch (a.action_type) {
     case 'SEARCH':       return `Searched for "${p.query}"`;
-    case 'VIEW':         return `Viewed patient #${p.patient_id}`;
+    case 'VIEW':         return `Viewed ${p.patient_name||'patient #'+p.patient_id}`;
     case 'UPDATE':       return `Updated ${p.patient_name||'patient'}: ${p.field} "${p.old_value}" \u2192 "${p.new_value}"`;
-    case 'DELETE':       return `Deleted ${p.patient_name} (${p.mrn})`;
-    case 'HISTORY':      return `Checked history for patient #${p.patient_id}`;
+    case 'DELETE':       return `Deleted ${p.patient_name}`;
+    case 'HISTORY':      return `Checked history for ${p.patient_name||'patient #'+p.patient_id}`;
     case 'AUDIT':        return `Audit: ${p.check||'integrity'} \u2014 ${p.intact!==undefined?(p.intact?'passed':'FAILED'):`${p.issues_found||0} issues`}`;
-    case 'LAB_REVIEW':   return `Reviewed labs for patient #${p.patient_id}`;
-    case 'APPOINTMENTS': return `Checked appointments for patient #${p.patient_id}`;
+    case 'LAB_REVIEW':   return `Reviewed labs for ${p.patient_name||'patient #'+p.patient_id}`;
+    case 'APPOINTMENTS': return `Checked appointments for ${p.patient_name||'patient #'+p.patient_id}`;
     case 'SCHEDULE':     return `Scheduled ${p.type||'appt'} for ${p.patient_name||'patient'}`;
     case 'RISK_REVIEW':  return `Reviewed high-risk patients`;
-    case 'CARE_TEAM':    return `Checked care team for patient #${p.patient_id}`;
+    case 'CARE_TEAM':    return `Checked care team for ${p.patient_name||'patient #'+p.patient_id}`;
     case 'TASK_COMPLETE':return 'Task complete';
     default:             return a.action_type;
   }
 }
 
-function humanStep(a, i) {
+function humanStep(a) {
   const p = a.payload || {};
   switch (a.action_type) {
     case 'SEARCH':       return `Searched patient database for "${p.query}"`;
-    case 'VIEW':         return `Opened patient record #${p.patient_id}`;
+    case 'VIEW':         return `Opened patient record for ${p.patient_name||'patient #'+p.patient_id}`;
     case 'UPDATE':       return `Changed ${p.field} from "${p.old_value}" to "${p.new_value}" for ${p.patient_name||'patient'}`;
     case 'DELETE':       return `Removed patient ${p.patient_name} from the system`;
-    case 'HISTORY':      return `Retrieved full medical history for patient #${p.patient_id}`;
+    case 'HISTORY':      return `Retrieved full change history for ${p.patient_name||'patient #'+p.patient_id}`;
     case 'AUDIT':        return `Ran integrity check: ${p.check||'verification'}`;
-    case 'LAB_REVIEW':   return `Pulled lab results for patient #${p.patient_id}`;
-    case 'APPOINTMENTS': return `Looked up appointments for patient #${p.patient_id}`;
+    case 'LAB_REVIEW':   return `Reviewed lab results for ${p.patient_name||'patient #'+p.patient_id}`;
+    case 'APPOINTMENTS': return `Checked appointments for ${p.patient_name||'patient #'+p.patient_id}`;
     case 'SCHEDULE':     return `Booked ${p.type||'appointment'} for ${p.patient_name||'patient'}`;
     case 'RISK_REVIEW':  return `Assessed high-risk patient list`;
-    case 'CARE_TEAM':    return `Reviewed care team assignments for patient #${p.patient_id}`;
+    case 'CARE_TEAM':    return `Reviewed care team for ${p.patient_name||'patient #'+p.patient_id}`;
     case 'TASK_COMPLETE':return `Finished \u2014 task completed successfully`;
     default:             return a.action_type;
   }
@@ -178,7 +177,7 @@ function Setup({ onSetKey, onSetMemoryKey }) {
     <div className="app setup-screen">
       <div className="setup-card">
         <h1 className="setup-title">MedLedger</h1>
-        <p className="setup-sub">AI-powered medical record agent with cryptographic audit trails</p>
+        <p className="setup-sub">AI agents with cryptographic audit trails for medical records</p>
         <div className="setup-form">
           <div className="setup-group"><label className="setup-label">Anthropic API Key</label>
             <input className="input input-lg" type="password" placeholder="sk-ant-api03-..." value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&go()} />
@@ -201,7 +200,7 @@ function Setup({ onSetKey, onSetMemoryKey }) {
 function App() {
   const [runs, setRuns]               = useState([]);
   const [openRunId, setOpenRunId]     = useState(null);
-  const [viewTab, setViewTab]         = useState('human');   // 'human' | 'crypto'
+  const [viewTab, setViewTab]         = useState('human');
   const [selectedBlock, setBlock]     = useState(null);
   const [connected, setConnected]     = useState(false);
   const [task, setTask]               = useState('');
@@ -211,8 +210,6 @@ function App() {
   const [chain, setChain]             = useState({ intact: true });
   const [tampered, setTampered]       = useState(false);
   const [showSettings, setSettings]   = useState(false);
-  const [portalKey, setPortalKey]     = useState(0);
-  const [portalStatus, setPortalStatus] = useState(null);   // null | 'reading' | 'updating' | 'searching'
 
   const curRunRef = useRef(null);
 
@@ -235,12 +232,6 @@ function App() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  /* ── portal status helper ── */
-  function showPortalStatus(actionType) {
-    const labels = { SEARCH:'Searching records...', VIEW:'Reading patient data...', UPDATE:'Updating records...', DELETE:'Deleting record...', HISTORY:'Loading history...', LAB_REVIEW:'Pulling lab results...', APPOINTMENTS:'Checking appointments...', SCHEDULE:'Scheduling...', RISK_REVIEW:'Reviewing patients...', CARE_TEAM:'Loading care team...' };
-    setPortalStatus(labels[actionType] || 'Processing...');
-  }
-
   /* ── websocket ── */
   useEffect(() => {
     let ws;
@@ -255,31 +246,26 @@ function App() {
         if (d.type === 'agent_start') {
           const run = { id: Date.now(), agent: d.agent_name||'AGENT', task: d.task||'Agent task', actions:[], status:'running', summary:null };
           curRunRef.current = run.id;
-          // remove seed runs on first real run, add new run on top
           setRuns(prev => {
             const real = prev.filter(r => !String(r.id).startsWith('seed'));
             return [run, ...real];
           });
-          // don't auto-open run detail — keep portal visible during execution
-          setOpenRunId(null);
+          setOpenRunId(run.id);
+          setViewTab('human');
         }
 
         if (d.type === 'action') {
           const { type, ...action } = d;
           setRuns(prev => prev.map(r => r.id === curRunRef.current ? { ...r, actions:[...r.actions, action] } : r));
-          showPortalStatus(action.action_type);
-          // only reload portal iframe on data-changing actions (not reads)
-          if (['UPDATE','DELETE','SCHEDULE'].includes(action.action_type)) setPortalKey(k => k + 1);
           fetch(`${API_URL}/audit/verify`).then(r=>r.json()).then(setChain).catch(()=>{});
         }
 
         if (d.type === 'task_complete') {
           setRuns(prev => prev.map(r => r.id === curRunRef.current ? { ...r, status:'complete', summary:d.summary } : r));
-          setRunning(false); curRunRef.current = null; setPortalStatus(null);
-          setPortalKey(k => k + 1); // refresh portal to show final state
+          setRunning(false); curRunRef.current = null;
         }
-        if (d.type === 'multi_agent_complete') { setRunning(false); curRunRef.current = null; setPortalStatus(null); }
-        if (d.type === 'error') { setRunning(false); curRunRef.current = null; setPortalStatus(null); }
+        if (d.type === 'multi_agent_complete') { setRunning(false); curRunRef.current = null; }
+        if (d.type === 'error') { setRunning(false); curRunRef.current = null; }
         if (d.type === 'tamper')   { setTampered(true);  reload(); }
         if (d.type === 'restored') { setTampered(false); reload(); }
       };
@@ -337,12 +323,16 @@ function App() {
         <h1 className="logo">MedLedger</h1>
         <div className="hdr-r">
           <span className={`dot ${connected?'dot-green':'dot-red'}`}/><span className="hdr-conn">{connected?'Live':'...'}</span>
+          <div className="chain-pill">
+            <span className={`dot ${chain.intact?'dot-green':'dot-red'}`}/>
+            <span className="chain-label">{chain.intact ? `Chain intact (${chain.total_actions||0})` : 'Chain broken'}</span>
+          </div>
           <button className="hdr-btn" onClick={()=>setSettings(true)}>Settings</button>
         </div>
       </header>
 
       <div className="layout">
-        {/* ─── LEFT SIDEBAR (~1/3) ─── */}
+        {/* ─── LEFT SIDEBAR ─── */}
         <aside className="sidebar">
           {/* prompt input */}
           <div className="prompt-section">
@@ -399,9 +389,8 @@ function App() {
           </div>
         </aside>
 
-        {/* ─── RIGHT MAIN (~2/3) ─── */}
+        {/* ─── RIGHT MAIN ─── */}
         <main className="main-panel">
-          {/* if a run is selected show details, otherwise show portal full */}
           {openRun ? (
             <div className="run-detail">
               {/* tabs */}
@@ -427,7 +416,7 @@ function App() {
                         <div className="hv-num">{i+1}</div>
                         <div className="hv-content">
                           <span className="hv-dot" style={{background:DOT[a.action_type]||'#64748b'}}/>
-                          <span className="hv-text">{humanStep(a, i)}</span>
+                          <span className="hv-text">{humanStep(a)}</span>
                           <span className="hv-time">{new Date(a.timestamp).toLocaleTimeString()}</span>
                         </div>
                       </div>
@@ -435,7 +424,7 @@ function App() {
                     {openRun.status === 'running' && (
                       <div className="hv-step hv-pending">
                         <div className="hv-num">...</div>
-                        <div className="hv-content"><span className="hv-text pulse">Agent is working...</span></div>
+                        <div className="hv-content"><span className="hv-text pulse">Agent is browsing the patient portal...</span></div>
                       </div>
                     )}
                   </div>
@@ -455,7 +444,6 @@ function App() {
                     </span>
                   </div>
 
-                  {/* chain diagram */}
                   <div className="chain-scroll">
                     <div className="chain">
                       {visibleActions.map((a,i) => (
@@ -476,7 +464,6 @@ function App() {
                   </div>
                   <div className="cv-hint">Click any block to inspect full cryptographic proof</div>
 
-                  {/* table */}
                   <div className="cv-table-wrap">
                     <table className="cv-table">
                       <thead>
@@ -501,15 +488,43 @@ function App() {
               )}
             </div>
           ) : (
-            /* no run selected — show portal full */
-            <div className="portal-full">
-              <div className="portal-bar">
-                <span className="portal-label">Patient Portal</span>
-                {portalStatus && <span className="portal-status pulse">{portalStatus}</span>}
-              </div>
-              <div className="portal-wrap">
-                <iframe key={portalKey} src={PORTAL} title="Patient Portal" className="portal-frame"/>
-                {portalStatus && <div className="portal-overlay"><div className="portal-toast">{portalStatus}</div></div>}
+            /* ── Welcome State (no run selected) ── */
+            <div className="welcome">
+              <div className="welcome-inner">
+                <h2 className="welcome-title">MedLedger</h2>
+                <p className="welcome-sub">AI-powered medical record agents with cryptographic audit trails</p>
+
+                <div className="welcome-cards">
+                  <div className="wc">
+                    <div className="wc-icon" style={{background:'rgba(99,102,241,0.1)',color:'#6366f1'}}>&#9881;</div>
+                    <h4>Browser Use Agents</h4>
+                    <p>Agents navigate the patient portal with a real browser — searching, clicking, reading, and updating records autonomously.</p>
+                  </div>
+                  <div className="wc">
+                    <div className="wc-icon" style={{background:'rgba(34,197,94,0.1)',color:'#22c55e'}}>&#128279;</div>
+                    <h4>Blockchain Audit Trail</h4>
+                    <p>Every action is ECDSA P-256 signed and SHA-256 hash-chained. Tamper-evident, cryptographically verifiable proof of what the AI did.</p>
+                  </div>
+                  <div className="wc">
+                    <div className="wc-icon" style={{background:'rgba(245,158,11,0.1)',color:'#f59e0b'}}>&#128101;</div>
+                    <h4>Multi-Agent Workflows</h4>
+                    <p>ARIA reads, DELTA writes. Each agent signs with its own identity. Cross-signed audit chains prove handoffs between agents.</p>
+                  </div>
+                </div>
+
+                <div className="welcome-status">
+                  <div className="ws-item">
+                    <span className={`dot ${chain.intact?'dot-green':'dot-red'}`}/>
+                    <span>{chain.intact ? `Chain intact \u2014 ${chain.total_actions||0} verified actions` : 'Chain integrity broken'}</span>
+                  </div>
+                  <div className="ws-item">
+                    <span className={`dot ${connected?'dot-green':'dot-red'}`}/>
+                    <span>{connected ? 'WebSocket connected' : 'Connecting...'}</span>
+                  </div>
+                </div>
+
+                <p className="welcome-hint">Type a task in the sidebar and click Run, or select a run to view details.</p>
+                <p className="welcome-hint">Open the Patient Portal in a separate tab at <span className="mono">localhost:8001</span> to watch the agent navigate.</p>
               </div>
             </div>
           )}

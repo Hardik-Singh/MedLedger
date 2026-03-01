@@ -560,7 +560,7 @@ class TestPortal:
         with TestClient(portal_app, raise_server_exceptions=False) as client:
             r = client.post("/login", data={"username": "demo", "password": "demo123"}, follow_redirects=False)
             assert r.status_code == 302
-            assert "/patients" in r.headers["location"]
+            assert "/dashboard" in r.headers["location"]
 
     def test_login_failure(self, fresh_db):
         async def run():

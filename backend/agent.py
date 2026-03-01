@@ -1,8 +1,8 @@
 """
 MedLedger Browser Use Agent
-Clean browser-use integration with cryptographically signed tool calls.
-Supports multi-agent workflows where agents can cross-sign each other's actions.
-Integrates Supermemory for persistent patient interaction memory.
+Real browser-use integration — the agent navigates the patient portal with a
+browser, clicking through pages, searching, viewing vitals, editing records.
+Each action is cryptographically signed into the audit chain.
 """
 
 import json
@@ -14,14 +14,9 @@ from typing import Callable, Awaitable, Optional
 import aiosqlite
 from backend.database import DB_PATH
 from backend.audit_chain import sign_action, verify_chain, get_full_log
-from backend.memory import store_interaction, recall_patient, recall_context, memory_status
-from backend.interactions import check_interactions, check_allergy
-from backend.dosage_checker import check_medication_string
-from backend.risk_engine import calculate_patient_risk
+from backend.memory import store_interaction, recall_context, memory_status
 
 # ──────────────────────────── Browser Use imports ────────────────────────────
-# Guarded so the rest of the backend works without browser-use installed.
-# To install: pip install browser-use langchain-anthropic && playwright install chromium
 
 try:
     from browser_use.agent.service import Agent
@@ -32,373 +27,147 @@ try:
 except ImportError:
     HAS_BROWSER_USE = False
 
+PORTAL_URL = os.environ.get("PORTAL_URL", "http://localhost:8001")
 
-# ──────────────────────────── Tool Definitions ────────────────────────────
 
-def register_tools(controller: "Controller", agent_id: str, broadcast_fn, action_count: list, patients_touched: set):
-    """Register all MedLedger tools on a browser-use controller.
-    Each tool signs its action into the audit chain before executing."""
+# ──────────────────────────── Audit-Signing Tools ────────────────────────────
+# These tools ONLY sign actions into the blockchain audit chain.
+# The actual data operations happen through the browser navigating the portal.
 
-    @controller.action("List all patients in the system with their basic info.")
-    async def list_patients():
-        action = await sign_action("SEARCH", {"query": "*all*"}, agent_id=agent_id)
-        action_count[0] += 1
-        if broadcast_fn:
-            await broadcast_fn({"type": "action", **action})
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT id, first_name, last_name, mrn, diagnosis, medications FROM patients WHERE deleted = 0 ORDER BY last_name"
-            )
-            result = json.dumps([dict(r) for r in await cursor.fetchall()], indent=2)
-        await store_interaction(agent_id, "SEARCH", {"query": "*all*"}, result[:200])
-        return result
+def register_audit_tools(controller: "Controller", agent_id: str, broadcast_fn, action_count: list, patients_touched: set):
+    """Register audit-signing tools on the browser-use controller."""
 
-    @controller.action("Search for a patient by name, MRN, diagnosis, or medication.")
-    async def search_patient(query: str):
+    @controller.action("Sign a SEARCH action into the audit chain after searching for patients in the portal browser.")
+    async def audit_search(query: str):
         action = await sign_action("SEARCH", {"query": query}, agent_id=agent_id)
         action_count[0] += 1
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            like = f"%{query}%"
-            cursor = await db.execute(
-                """SELECT id, first_name, last_name, mrn, diagnosis, medications
-                   FROM patients
-                   WHERE (first_name || ' ' || last_name LIKE ?
-                       OR mrn LIKE ? OR diagnosis LIKE ? OR medications LIKE ?)
-                     AND deleted = 0""",
-                (like, like, like, like),
-            )
-            result = json.dumps([dict(r) for r in await cursor.fetchall()], indent=2)
-        await store_interaction(agent_id, "SEARCH", {"query": query}, result[:200])
-        return result
+        await store_interaction(agent_id, "SEARCH", {"query": query})
+        return f"Audit signed: SEARCH for '{query}'"
 
-    @controller.action("View a patient's full record including demographics, diagnosis, medications, allergies, insurance, notes, and contact info.")
-    async def view_patient(patient_id: int):
-        action = await sign_action("VIEW", {"patient_id": patient_id}, agent_id=agent_id)
+    @controller.action("Sign a VIEW action into the audit chain after viewing a patient record in the portal browser.")
+    async def audit_view(patient_id: int, patient_name: str):
+        action = await sign_action("VIEW", {"patient_id": patient_id, "patient_name": patient_name}, agent_id=agent_id)
         action_count[0] += 1
         patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM patients WHERE id = ?", (patient_id,))
-            row = await cursor.fetchone()
-            result = json.dumps(dict(row), indent=2) if row else "Patient not found"
-
-        # Recall past memories about this patient
-        patient_name = ""
-        if row:
-            patient_name = f"{row['first_name']} {row['last_name']}"
-        memories = await recall_patient(agent_id, patient_name=patient_name, patient_id=str(patient_id))
-        await store_interaction(agent_id, "VIEW", {"patient_id": patient_id, "patient_name": patient_name}, result[:200])
-
-        if memories:
-            result += f"\n\n--- Previous Agent Interactions (from memory) ---\n{memories}"
-        return result
+        await store_interaction(agent_id, "VIEW", {"patient_id": patient_id, "patient_name": patient_name})
+        return f"Audit signed: VIEW {patient_name} (#{patient_id})"
 
     @controller.action(
-        "Update a patient record field. field must be one of: "
-        "first_name, last_name, dob, phone, insurance, allergies, diagnosis, medications, notes. "
-        "value should be the complete new value for that field."
+        "Sign an UPDATE action into the audit chain after updating a patient field in the portal. "
+        "Call this AFTER you have saved the changes through the portal edit form."
     )
-    async def update_patient(patient_id: int, field: str, value: str):
-        allowed = ["first_name", "last_name", "dob", "phone", "insurance", "allergies", "diagnosis", "medications", "notes"]
-        if field not in allowed:
-            return f"Field '{field}' not updatable. Allowed: {allowed}"
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM patients WHERE id = ? AND deleted = 0", (patient_id,))
-            old = await cursor.fetchone()
-            if not old:
-                return "Patient not found"
-            old_value = old[field] or ""
-            patient_name = f"{old['first_name']} {old['last_name']}"
-
-            # Medication safety checks
-            warnings = []
-            if field == "medications":
-                # Check allergy conflicts
-                allergy_result = check_allergy(old["allergies"] or "", value)
-                if allergy_result and allergy_result.get("conflict"):
-                    if broadcast_fn:
-                        await broadcast_fn({"type": "interaction_alert", "severity": "CRITICAL",
-                                            "message": f"ALLERGY CONFLICT: {patient_name} is allergic to {allergy_result['allergen']} — {allergy_result['medication']} is contraindicated"})
-                    return f"BLOCKED: Allergy conflict — {allergy_result['description']}. Requires human override."
-
-                # Check drug interactions
-                interactions = check_interactions(old["medications"] or "", value)
-                for ix in interactions:
-                    if ix["severity"] == "CRITICAL":
-                        if broadcast_fn:
-                            await broadcast_fn({"type": "interaction_alert", "severity": "CRITICAL",
-                                                "message": f"DRUG INTERACTION: {ix['drug_a']} + {ix['drug_b']} — {ix['description']}"})
-                        return f"BLOCKED: Critical interaction — {ix['description']}. Requires human override."
-                    else:
-                        warnings.append(f"{ix['severity']}: {ix['drug_a']} + {ix['drug_b']} — {ix['description']}")
-                        if broadcast_fn:
-                            await broadcast_fn({"type": "interaction_alert", "severity": ix["severity"],
-                                                "message": f"Drug interaction: {ix['drug_a']} + {ix['drug_b']} — {ix['description']}"})
-
-                # Check dosage safety
-                dosage_issues = check_medication_string(value)
-                for d in dosage_issues:
-                    if not d.get("safe", True):
-                        if broadcast_fn:
-                            await broadcast_fn({"type": "interaction_alert", "severity": d.get("severity", "HIGH"),
-                                                "message": f"Dosage warning: {d['warning']}"})
-                        if d.get("severity") == "CRITICAL":
-                            return f"BLOCKED: {d['warning']}. Requires human override."
-                    warnings.append(d["warning"])
-
-            payload = {
-                "patient_id": patient_id,
-                "field": field,
-                "old_value": old_value,
-                "new_value": value,
-                "patient_name": patient_name,
-                "warnings": warnings if warnings else None,
-            }
-            action = await sign_action("UPDATE", payload, agent_id=agent_id)
-            action_count[0] += 1
-            patients_touched.add(patient_id)
-            if broadcast_fn:
-                await broadcast_fn({"type": "action", **action})
-            now = datetime.now(timezone.utc).isoformat()
-            await db.execute(
-                """INSERT INTO patient_history
-                   (patient_id, first_name, last_name, dob, mrn, diagnosis, medications,
-                    allergies, last_visit, phone, insurance, change_type, changed_at,
-                    changed_field, old_value, new_value)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,'UPDATE',?,?,?,?)""",
-                (patient_id, old['first_name'], old['last_name'], old['dob'], old['mrn'],
-                 old['diagnosis'], old['medications'], old['allergies'], old['last_visit'],
-                 old['phone'], old['insurance'], now, field, old_value, value),
-            )
-            await db.execute(f"UPDATE patients SET {field} = ? WHERE id = ?", (value, patient_id))
-            await db.commit()
-
-            # Log to care team
-            await db.execute(
-                "INSERT INTO care_team_log (patient_id, provider_name, provider_role, action, timestamp) VALUES (?, ?, 'agent', ?, ?)",
-                (patient_id, agent_id, f"Updated {field}", now),
-            )
-            await db.commit()
-
+    async def audit_update(patient_id: int, patient_name: str, field: str, old_value: str, new_value: str):
+        payload = {
+            "patient_id": patient_id,
+            "patient_name": patient_name,
+            "field": field,
+            "old_value": old_value,
+            "new_value": new_value,
+        }
+        action = await sign_action("UPDATE", payload, agent_id=agent_id)
+        action_count[0] += 1
+        patients_touched.add(patient_id)
+        if broadcast_fn:
+            await broadcast_fn({"type": "action", **action})
         await store_interaction(agent_id, "UPDATE", payload)
-        result = f"Updated {field} from '{old_value}' to '{value}'"
-        if warnings:
-            result += f"\nWarnings: {'; '.join(warnings)}"
-        return result
+        return f"Audit signed: UPDATE {patient_name}.{field} '{old_value}' -> '{new_value}'"
 
-    @controller.action("Delete a patient record (soft delete — preserved for audit).")
-    async def delete_patient(patient_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM patients WHERE id = ? AND deleted = 0", (patient_id,))
-            old = await cursor.fetchone()
-            if not old:
-                return "Patient not found or already deleted"
-            payload = {
-                "patient_id": patient_id,
-                "patient_name": f"{old['first_name']} {old['last_name']}",
-                "mrn": old["mrn"],
-            }
-            action = await sign_action("DELETE", payload, agent_id=agent_id)
-            action_count[0] += 1
-            patients_touched.add(patient_id)
-            if broadcast_fn:
-                await broadcast_fn({"type": "action", **action})
-            now = datetime.now(timezone.utc).isoformat()
-            await db.execute(
-                """INSERT INTO patient_history
-                   (patient_id, first_name, last_name, dob, mrn, diagnosis, medications,
-                    allergies, last_visit, phone, insurance, change_type, changed_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,'DELETE',?)""",
-                (patient_id, old['first_name'], old['last_name'], old['dob'], old['mrn'],
-                 old['diagnosis'], old['medications'], old['allergies'], old['last_visit'],
-                 old['phone'], old['insurance'], now),
-            )
-            await db.execute("UPDATE patients SET deleted = 1, deleted_at = ? WHERE id = ?", (now, patient_id))
-            await db.commit()
+    @controller.action("Sign a DELETE action into the audit chain after deleting a patient in the portal browser.")
+    async def audit_delete(patient_id: int, patient_name: str):
+        payload = {"patient_id": patient_id, "patient_name": patient_name}
+        action = await sign_action("DELETE", payload, agent_id=agent_id)
+        action_count[0] += 1
+        patients_touched.add(patient_id)
+        if broadcast_fn:
+            await broadcast_fn({"type": "action", **action})
         await store_interaction(agent_id, "DELETE", payload)
-        return f"Deleted {old['first_name']} {old['last_name']}"
+        return f"Audit signed: DELETE {patient_name}"
 
-    @controller.action("Get the full version history for a patient — all past changes with timestamps.")
-    async def get_patient_history(patient_id: int):
-        action = await sign_action("HISTORY", {"patient_id": patient_id}, agent_id=agent_id)
+    @controller.action("Sign a LAB_REVIEW action after reviewing a patient's lab results or vitals in the portal.")
+    async def audit_lab_review(patient_id: int, patient_name: str):
+        action = await sign_action("LAB_REVIEW", {"patient_id": patient_id, "patient_name": patient_name}, agent_id=agent_id)
         action_count[0] += 1
         patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM patient_history WHERE patient_id = ? ORDER BY changed_at DESC",
-                (patient_id,),
-            )
-            rows = [dict(r) for r in await cursor.fetchall()]
-        result = json.dumps(rows, indent=2) if rows else "No history found"
-        await store_interaction(agent_id, "HISTORY", {"patient_id": patient_id}, result[:200])
-        return result
+        return f"Audit signed: LAB_REVIEW for {patient_name}"
 
-    @controller.action("Recall what you or other agents know about a patient from previous sessions (uses long-term memory).")
-    async def recall_memory(query: str):
-        """Query supermemory for past interactions."""
-        memories = await recall_context(agent_id, query)
-        if not memories:
-            return "No relevant memories found. Supermemory may not be configured."
-        return f"Memories from past sessions:\n{memories}"
-
-    @controller.action("Review lab results for a patient and flag abnormal values.")
-    async def review_labs(patient_id: int):
-        action = await sign_action("LAB_REVIEW", {"patient_id": patient_id}, agent_id=agent_id)
+    @controller.action("Sign an APPOINTMENTS action after checking a patient's upcoming appointments in the portal.")
+    async def audit_appointments(patient_id: int, patient_name: str):
+        action = await sign_action("APPOINTMENTS", {"patient_id": patient_id, "patient_name": patient_name}, agent_id=agent_id)
         action_count[0] += 1
         patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM lab_results WHERE patient_id = ? ORDER BY resulted_at DESC", (patient_id,)
-            )
-            labs = [dict(r) for r in await cursor.fetchall()]
-        if not labs:
-            return "No lab results found for this patient."
-        abnormals = [l for l in labs if l["status"] != "normal"]
-        summary = f"Lab Results: {len(labs)} total, {len(abnormals)} abnormal\n"
-        for l in labs:
-            flag = f" ** {l['status'].upper()} **" if l["status"] != "normal" else ""
-            summary += f"  {l['test_name']}: {l['value']} {l['unit']} (ref {l['reference_range_low']}-{l['reference_range_high']}){flag}\n"
-        if abnormals and broadcast_fn:
-            names = ", ".join(f"{l['test_name']} {l['status']}" for l in abnormals)
-            await broadcast_fn({"type": "lab_alert", "patient_id": patient_id, "abnormal_count": len(abnormals), "summary": names})
-        return summary
+        return f"Audit signed: APPOINTMENTS for {patient_name}"
 
-    @controller.action("View upcoming appointments for a patient.")
-    async def view_appointments(patient_id: int):
-        action = await sign_action("APPOINTMENTS", {"patient_id": patient_id}, agent_id=agent_id)
+    @controller.action("Sign a HISTORY action after reviewing a patient's change history in the portal.")
+    async def audit_history(patient_id: int, patient_name: str):
+        action = await sign_action("HISTORY", {"patient_id": patient_id, "patient_name": patient_name}, agent_id=agent_id)
         action_count[0] += 1
         patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM appointments WHERE patient_id = ? ORDER BY scheduled_for ASC", (patient_id,)
-            )
-            rows = [dict(r) for r in await cursor.fetchall()]
-        return json.dumps(rows, indent=2) if rows else "No appointments found."
-
-    @controller.action("Schedule a follow-up appointment for a patient.")
-    async def schedule_appointment(patient_id: int, appointment_type: str, days_from_now: int, doctor: str):
-        from datetime import timedelta
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT first_name, last_name FROM patients WHERE id = ?", (patient_id,))
-            p = await cursor.fetchone()
-            if not p:
-                return "Patient not found"
-            patient_name = f"{p['first_name']} {p['last_name']}"
-            scheduled_for = (datetime.now(timezone.utc) + timedelta(days=days_from_now)).isoformat()
-            now = datetime.now(timezone.utc).isoformat()
-            await db.execute(
-                """INSERT INTO appointments (patient_id, patient_name, doctor_name, appointment_type, scheduled_for, duration_minutes, status, notes, created_at, created_by)
-                   VALUES (?, ?, ?, ?, ?, 30, 'scheduled', '', ?, ?)""",
-                (patient_id, patient_name, doctor, appointment_type, scheduled_for, now, agent_id),
-            )
-            await db.commit()
-        action = await sign_action("SCHEDULE", {"patient_id": patient_id, "patient_name": patient_name, "type": appointment_type, "doctor": doctor, "days_from_now": days_from_now}, agent_id=agent_id)
-        action_count[0] += 1
-        patients_touched.add(patient_id)
-        if broadcast_fn:
-            await broadcast_fn({"type": "action", **action})
-        return f"Scheduled {appointment_type} with {doctor} for {patient_name} in {days_from_now} days"
-
-    @controller.action("Review high risk patients — patients with CRITICAL or HIGH risk scores.")
-    async def review_high_risk_patients():
-        action = await sign_action("RISK_REVIEW", {"query": "high_risk"}, agent_id=agent_id)
-        action_count[0] += 1
-        if broadcast_fn:
-            await broadcast_fn({"type": "action", **action})
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM patients WHERE deleted = 0")
-            patients = [dict(r) for r in await cursor.fetchall()]
-        results = []
-        for p in patients:
-            risk = calculate_patient_risk(p)
-            if risk["risk_level"] in ("CRITICAL", "HIGH"):
-                results.append(f"{p['first_name']} {p['last_name']} (MRN: {p['mrn']}): {risk['risk_level']} (score {risk['score']}) — {', '.join(risk['factors'])}")
-        if not results:
-            return "No high risk patients identified."
-        return "High Risk Patients:\n" + "\n".join(results)
-
-    @controller.action("Check care team status for a patient — who has accessed the record recently.")
-    async def check_care_team(patient_id: int):
-        action = await sign_action("CARE_TEAM", {"patient_id": patient_id}, agent_id=agent_id)
-        action_count[0] += 1
-        patients_touched.add(patient_id)
-        if broadcast_fn:
-            await broadcast_fn({"type": "action", **action})
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM care_team_log WHERE patient_id = ? ORDER BY timestamp DESC LIMIT 20", (patient_id,)
-            )
-            rows = [dict(r) for r in await cursor.fetchall()]
-        if not rows:
-            return "No care team activity recorded for this patient."
-        providers = set()
-        agent_only = True
-        for r in rows:
-            providers.add(f"{r['provider_name']} ({r['provider_role']})")
-            if r["provider_role"] != "agent":
-                agent_only = False
-        summary = f"Care team ({len(providers)} members): " + ", ".join(providers)
-        if agent_only:
-            summary += "\nWARNING: Only agent activity — no human provider has accessed this record recently."
-        return summary
+        return f"Audit signed: HISTORY for {patient_name}"
 
 
-# ──────────────────────────── System Prompt Builder ────────────────────────────
+# ──────────────────────────── System Prompt ────────────────────────────
 
-async def _build_system_prompt(agent_name: str, task: str, agent_id: str, step: int = 0, total_steps: int = 0) -> str:
-    """Build a context-rich system prompt, optionally with recalled memories."""
-    parts = []
+async def _build_system_prompt(agent_name: str, task: str, agent_id: str) -> str:
+    """Build system prompt that instructs the agent to navigate the portal."""
+    parts = [
+        f"You are {agent_name}, an AI medical records agent.",
+        "",
+        f"You have a browser. Navigate the MedLedger Patient Portal at {PORTAL_URL} to accomplish your task.",
+        "",
+        "STEP-BY-STEP WORKFLOW:",
+        f"1. Go to {PORTAL_URL}",
+        "2. You will see a login page. Enter username 'demo' and password 'demo123', then click 'Sign In'",
+        "3. After login you land on the Dashboard. Use the navigation links to go to Patients, Appointments, etc.",
+        "4. Use the portal to accomplish your task:",
+        "   - Click 'Patients' in the nav bar to see the patient list",
+        "   - Use the search box to find patients by name, MRN, diagnosis, or medication",
+        "   - Click on a patient name or 'View' button to see their full record",
+        "   - On the patient detail page, click tabs to view Vitals & Labs, Appointments, History",
+        "   - Click 'Edit' to modify a patient record, fill in the form, click 'Save Changes'",
+        "   - Click 'Delete' to remove a patient (with confirmation)",
+        "",
+        "5. IMPORTANT — After EACH significant action, call the matching audit tool to sign it:",
+        "   - audit_search(query) — after searching for patients",
+        "   - audit_view(patient_id, patient_name) — after opening a patient record",
+        "   - audit_update(patient_id, patient_name, field, old_value, new_value) — after saving changes",
+        "   - audit_delete(patient_id, patient_name) — after deleting a patient",
+        "   - audit_lab_review(patient_id, patient_name) — after reviewing labs/vitals",
+        "   - audit_appointments(patient_id, patient_name) — after checking appointments",
+        "   - audit_history(patient_id, patient_name) — after viewing change history",
+        "",
+        "RULES:",
+        "- Always use the BROWSER to interact with the portal — click, type, scroll",
+        "- Read data from what you see on the page, don't guess or hallucinate values",
+        "- Note old values BEFORE making edits so you can report them accurately in audit_update",
+        "- Sign every meaningful action into the audit chain",
+        "- When updating medications, type the FULL medication list (all meds, not just the changed one)",
+    ]
 
-    if step > 0:
-        parts.append(f"You are {agent_name}, step {step} of {total_steps} in a multi-agent workflow.")
-    else:
-        parts.append(f"You are {agent_name}, an AI medical records assistant.")
-
-    parts.append(
-        "You have tools to search, view, update, delete patients and check history. "
-        "Use the tools directly — do NOT try to navigate the browser UI. "
-        "When updating medications, set the FULL medication string (all meds, not just the changed one). "
-        "View a patient first before updating so you know current values. Confirm what you did."
-    )
-
-    # Recall relevant memories from supermemory
+    # Add recalled memories if available
     mem_status = memory_status()
     if mem_status["status"] == "active":
         memories = await recall_context(agent_id, task, limit=3)
         if memories:
-            parts.append(f"\n--- Recalled Context (from past sessions) ---\n{memories}\n--- End Recalled Context ---")
-        parts.append("You have long-term memory. Use recall_memory to look up past interactions.")
+            parts.append(f"\n--- Recalled Context (from past sessions) ---\n{memories}\n---")
 
-    return " ".join(parts)
+    return "\n".join(parts)
 
 
-# ──────────────────────────── Auditing Agent ────────────────────────────
+# ──────────────────────────── Auditing Agent (no browser) ────────────────────
 
 async def run_audit_agent(broadcast_fn: Optional[Callable[[dict], Awaitable]] = None):
-    """
-    Auditing agent — verifies chain integrity, checks for anomalies,
-    and stores findings in memory. Runs without browser-use.
-    """
+    """Auditing agent — verifies chain integrity, checks for anomalies.
+    Runs without browser-use (pure data checks)."""
     agent_id = "auditor"
     findings = []
 
@@ -420,7 +189,7 @@ async def run_audit_agent(broadcast_fn: Optional[Callable[[dict], Awaitable]] = 
     else:
         findings.append(f"Chain integrity: FAILED at block {chain_status.get('broken_at')} — {chain_status.get('error')}")
 
-    # 2. Check for suspicious patterns in audit log
+    # 2. Check for suspicious patterns
     log = await get_full_log()
     delete_count = sum(1 for a in log if a["action_type"] == "DELETE")
     update_count = sum(1 for a in log if a["action_type"] == "UPDATE")
@@ -470,11 +239,10 @@ async def run_audit_agent(broadcast_fn: Optional[Callable[[dict], Awaitable]] = 
     if broadcast_fn:
         await broadcast_fn({"type": "action", **action})
 
-    # 4. Store audit findings in memory
+    # 4. Store and complete
     audit_summary = "\n".join(findings)
     await store_interaction(agent_id, "AUDIT", {"summary": audit_summary}, audit_summary)
 
-    # 5. Complete
     complete_action = await sign_action("TASK_COMPLETE", {
         "task": "Data integrity audit",
         "result": audit_summary,
@@ -505,7 +273,7 @@ async def run_agent_task(
     agent_name: str = "MedLedger Agent",
     api_key: str = None,
 ):
-    """Run a single browser-use agent with cryptographically signed tool calls."""
+    """Run a browser-use agent that navigates the patient portal."""
     if not HAS_BROWSER_USE:
         raise ImportError("browser-use and langchain-anthropic are required. Run: pip install browser-use langchain-anthropic")
 
@@ -521,7 +289,7 @@ async def run_agent_task(
         await broadcast_fn({"type": "agent_start", "agent_name": agent_name, "task": task})
 
     controller = Controller()
-    register_tools(controller, agent_id, broadcast_fn, action_count, patients_touched)
+    register_audit_tools(controller, agent_id, broadcast_fn, action_count, patients_touched)
 
     llm = ChatAnthropic(model_name="claude-sonnet-4-20250514", timeout=120, stop=None)
     browser_session = BrowserSession(headless=True, disable_security=True)
@@ -542,7 +310,6 @@ async def run_agent_task(
         result = await agent.run()
         elapsed = round(time.time() - start_time, 1)
 
-        # Store completion in memory
         await store_interaction(agent_id, "TASK_COMPLETE", {"task": task}, str(result)[:300])
 
         if broadcast_fn:
@@ -570,13 +337,8 @@ async def run_multi_agent(
     broadcast_fn: Optional[Callable[[dict], Awaitable]] = None,
     api_key: str = None,
 ):
-    """
-    Run multiple agents sequentially. Each agent's actions are signed with its own
-    identity, but all share the same audit chain — so agent B's first action links
-    to agent A's last action. This creates a cross-signed, multi-agent audit trail.
-
-    agents_config: [{"name": "Triage Bot", "task": "..."}, {"name": "Updater Bot", "task": "..."}]
-    """
+    """Run multiple agents sequentially. Each agent navigates the portal independently.
+    All share one audit chain — agent B's actions link to agent A's last action."""
     if not HAS_BROWSER_USE:
         raise ImportError("browser-use and langchain-anthropic are required")
 
@@ -612,12 +374,12 @@ async def run_multi_agent(
             await broadcast_fn({"type": "agent_start", "agent_name": agent_name, "task": task})
 
         controller = Controller()
-        register_tools(controller, agent_id, broadcast_fn, action_count, patients_touched)
+        register_audit_tools(controller, agent_id, broadcast_fn, action_count, patients_touched)
 
         llm = ChatAnthropic(model_name="claude-sonnet-4-20250514", timeout=120, stop=None)
         browser_session = BrowserSession(headless=True, disable_security=True)
 
-        system_msg = await _build_system_prompt(agent_name, task, agent_id, step=i+1, total_steps=len(agents_config))
+        system_msg = await _build_system_prompt(agent_name, task, agent_id)
 
         agent = Agent(
             task=task,
