@@ -1,3 +1,11 @@
 node_modules/
 .env
 .DS_Store
+__pycache__/
+*.pyc
+*.pyo
+backend/keys/
+backend/medledger.db
+frontend/build/
+frontend/node_modules/
+*.pem
