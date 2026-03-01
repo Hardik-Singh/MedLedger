@@ -1,8 +1,8 @@
 """
 MedLedger Browser Use Agent
-Real browser-use integration — the agent navigates the patient portal with a
-browser, clicking through pages, searching, viewing vitals, editing records.
-Each action is cryptographically signed into the audit chain.
+Browser-use agent that navigates the patient portal with real clicks.
+Actions are cryptographically signed into the audit chain as the agent works.
+Supports multi-agent workflows and Supermemory for persistent memory.
 """
 
 import json
@@ -14,7 +14,10 @@ from typing import Callable, Awaitable, Optional
 import aiosqlite
 from backend.database import DB_PATH
 from backend.audit_chain import sign_action, verify_chain, get_full_log
-from backend.memory import store_interaction, recall_context, memory_status
+from backend.memory import store_interaction, recall_patient, recall_context, memory_status
+from backend.interactions import check_interactions, check_allergy
+from backend.dosage_checker import check_medication_string
+from backend.risk_engine import calculate_patient_risk
 
 # ──────────────────────────── Browser Use imports ────────────────────────────
 
@@ -22,152 +25,201 @@ try:
     from browser_use.agent.service import Agent
     from browser_use.browser.session import BrowserSession
     from browser_use.controller import Controller
-    from langchain_anthropic import ChatAnthropic
+    from browser_use.llm.anthropic.chat import ChatAnthropic
     HAS_BROWSER_USE = True
 except ImportError:
     HAS_BROWSER_USE = False
 
-PORTAL_URL = os.environ.get("PORTAL_URL", "http://localhost:8001")
+PORTAL_URL = os.getenv("PORTAL_URL", "http://localhost:8001")
 
 
 # ──────────────────────────── Audit-Signing Tools ────────────────────────────
-# These tools ONLY sign actions into the blockchain audit chain.
-# The actual data operations happen through the browser navigating the portal.
 
 def register_audit_tools(controller: "Controller", agent_id: str, broadcast_fn, action_count: list, patients_touched: set):
-    """Register audit-signing tools on the browser-use controller."""
+    """Register lightweight audit-signing tools on the controller.
+    These sign actions into the chain WITHOUT bypassing the browser — the agent
+    still navigates the portal UI, but calls these to create audit records."""
 
-    @controller.action("Sign a SEARCH action into the audit chain after searching for patients in the portal browser.")
+    @controller.action(
+        "Sign a SEARCH action into the audit chain. Call this AFTER you search in the portal UI. "
+        "query: the search term you used."
+    )
     async def audit_search(query: str):
         action = await sign_action("SEARCH", {"query": query}, agent_id=agent_id)
         action_count[0] += 1
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
         await store_interaction(agent_id, "SEARCH", {"query": query})
-        return f"Audit signed: SEARCH for '{query}'"
-
-    @controller.action("Sign a VIEW action into the audit chain after viewing a patient record in the portal browser.")
-    async def audit_view(patient_id: int, patient_name: str):
-        action = await sign_action("VIEW", {"patient_id": patient_id, "patient_name": patient_name}, agent_id=agent_id)
-        action_count[0] += 1
-        patients_touched.add(patient_id)
-        if broadcast_fn:
-            await broadcast_fn({"type": "action", **action})
-        await store_interaction(agent_id, "VIEW", {"patient_id": patient_id, "patient_name": patient_name})
-        return f"Audit signed: VIEW {patient_name} (#{patient_id})"
+        return f"Audit: search for '{query}' signed to chain"
 
     @controller.action(
-        "Sign an UPDATE action into the audit chain after updating a patient field in the portal. "
-        "Call this AFTER you have saved the changes through the portal edit form."
+        "Sign a VIEW action into the audit chain. Call this AFTER you view a patient in the portal UI. "
+        "patient_name: the patient's full name you viewed."
     )
-    async def audit_update(patient_id: int, patient_name: str, field: str, old_value: str, new_value: str):
-        payload = {
-            "patient_id": patient_id,
-            "patient_name": patient_name,
-            "field": field,
-            "old_value": old_value,
-            "new_value": new_value,
-        }
+    async def audit_view(patient_name: str):
+        # look up id
+        pid = None
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            like = f"%{patient_name}%"
+            cur = await db.execute(
+                "SELECT id FROM patients WHERE (first_name || ' ' || last_name LIKE ?) AND deleted = 0", (like,)
+            )
+            row = await cur.fetchone()
+            if row:
+                pid = row["id"]
+                patients_touched.add(pid)
+        action = await sign_action("VIEW", {"patient_id": pid, "patient_name": patient_name}, agent_id=agent_id)
+        action_count[0] += 1
+        if broadcast_fn:
+            await broadcast_fn({"type": "action", **action})
+        await store_interaction(agent_id, "VIEW", {"patient_id": pid, "patient_name": patient_name})
+        return f"Audit: view of {patient_name} signed to chain"
+
+    @controller.action(
+        "Sign an UPDATE action into the audit chain. Call this AFTER you update a patient field in the portal UI. "
+        "patient_name: full name, field: which field, old_value: previous value, new_value: new value."
+    )
+    async def audit_update(patient_name: str, field: str, old_value: str, new_value: str):
+        pid = None
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            like = f"%{patient_name}%"
+            cur = await db.execute(
+                "SELECT id FROM patients WHERE (first_name || ' ' || last_name LIKE ?) AND deleted = 0", (like,)
+            )
+            row = await cur.fetchone()
+            if row:
+                pid = row["id"]
+                patients_touched.add(pid)
+        payload = {"patient_id": pid, "patient_name": patient_name, "field": field, "old_value": old_value, "new_value": new_value}
         action = await sign_action("UPDATE", payload, agent_id=agent_id)
         action_count[0] += 1
-        patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
         await store_interaction(agent_id, "UPDATE", payload)
-        return f"Audit signed: UPDATE {patient_name}.{field} '{old_value}' -> '{new_value}'"
+        return f"Audit: update of {patient_name}.{field} signed to chain"
 
-    @controller.action("Sign a DELETE action into the audit chain after deleting a patient in the portal browser.")
-    async def audit_delete(patient_id: int, patient_name: str):
-        payload = {"patient_id": patient_id, "patient_name": patient_name}
-        action = await sign_action("DELETE", payload, agent_id=agent_id)
+    @controller.action(
+        "Sign a HISTORY action into the audit chain. Call this AFTER you view a patient's history in the portal."
+    )
+    async def audit_history(patient_name: str):
+        pid = None
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            like = f"%{patient_name}%"
+            cur = await db.execute(
+                "SELECT id FROM patients WHERE (first_name || ' ' || last_name LIKE ?) AND deleted = 0", (like,)
+            )
+            row = await cur.fetchone()
+            if row:
+                pid = row["id"]
+                patients_touched.add(pid)
+        action = await sign_action("HISTORY", {"patient_id": pid, "patient_name": patient_name}, agent_id=agent_id)
         action_count[0] += 1
-        patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
-        await store_interaction(agent_id, "DELETE", payload)
-        return f"Audit signed: DELETE {patient_name}"
+        return f"Audit: history view of {patient_name} signed to chain"
 
-    @controller.action("Sign a LAB_REVIEW action after reviewing a patient's lab results or vitals in the portal.")
-    async def audit_lab_review(patient_id: int, patient_name: str):
-        action = await sign_action("LAB_REVIEW", {"patient_id": patient_id, "patient_name": patient_name}, agent_id=agent_id)
+    @controller.action(
+        "Sign a LAB_REVIEW action into the audit chain. Call this AFTER you view lab results in the portal."
+    )
+    async def audit_labs(patient_name: str):
+        pid = None
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            like = f"%{patient_name}%"
+            cur = await db.execute(
+                "SELECT id FROM patients WHERE (first_name || ' ' || last_name LIKE ?) AND deleted = 0", (like,)
+            )
+            row = await cur.fetchone()
+            if row:
+                pid = row["id"]
+                patients_touched.add(pid)
+        action = await sign_action("LAB_REVIEW", {"patient_id": pid, "patient_name": patient_name}, agent_id=agent_id)
         action_count[0] += 1
-        patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
-        return f"Audit signed: LAB_REVIEW for {patient_name}"
+        return f"Audit: lab review of {patient_name} signed to chain"
 
-    @controller.action("Sign an APPOINTMENTS action after checking a patient's upcoming appointments in the portal.")
-    async def audit_appointments(patient_id: int, patient_name: str):
-        action = await sign_action("APPOINTMENTS", {"patient_id": patient_id, "patient_name": patient_name}, agent_id=agent_id)
+    @controller.action(
+        "Sign an APPOINTMENTS action into the audit chain. Call this AFTER you view appointments in the portal."
+    )
+    async def audit_appointments(patient_name: str):
+        pid = None
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            like = f"%{patient_name}%"
+            cur = await db.execute(
+                "SELECT id FROM patients WHERE (first_name || ' ' || last_name LIKE ?) AND deleted = 0", (like,)
+            )
+            row = await cur.fetchone()
+            if row:
+                pid = row["id"]
+                patients_touched.add(pid)
+        action = await sign_action("APPOINTMENTS", {"patient_id": pid, "patient_name": patient_name}, agent_id=agent_id)
         action_count[0] += 1
-        patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
-        return f"Audit signed: APPOINTMENTS for {patient_name}"
-
-    @controller.action("Sign a HISTORY action after reviewing a patient's change history in the portal.")
-    async def audit_history(patient_id: int, patient_name: str):
-        action = await sign_action("HISTORY", {"patient_id": patient_id, "patient_name": patient_name}, agent_id=agent_id)
-        action_count[0] += 1
-        patients_touched.add(patient_id)
-        if broadcast_fn:
-            await broadcast_fn({"type": "action", **action})
-        return f"Audit signed: HISTORY for {patient_name}"
+        return f"Audit: appointments view of {patient_name} signed to chain"
 
 
-# ──────────────────────────── System Prompt ────────────────────────────
+# ──────────────────────────── System Prompt Builder ────────────────────────────
 
-async def _build_system_prompt(agent_name: str, task: str, agent_id: str) -> str:
-    """Build system prompt that instructs the agent to navigate the portal."""
-    parts = [
-        f"You are {agent_name}, an AI medical records agent.",
-        "",
-        f"You have a browser. Navigate the MedLedger Patient Portal at {PORTAL_URL} to accomplish your task.",
-        "",
-        "STEP-BY-STEP WORKFLOW:",
-        f"1. Go to {PORTAL_URL}",
-        "2. You will see a login page. Enter username 'demo' and password 'demo123', then click 'Sign In'",
-        "3. After login you land on the Dashboard. Use the navigation links to go to Patients, Appointments, etc.",
-        "4. Use the portal to accomplish your task:",
-        "   - Click 'Patients' in the nav bar to see the patient list",
-        "   - Use the search box to find patients by name, MRN, diagnosis, or medication",
-        "   - Click on a patient name or 'View' button to see their full record",
-        "   - On the patient detail page, click tabs to view Vitals & Labs, Appointments, History",
-        "   - Click 'Edit' to modify a patient record, fill in the form, click 'Save Changes'",
-        "   - Click 'Delete' to remove a patient (with confirmation)",
-        "",
-        "5. IMPORTANT — After EACH significant action, call the matching audit tool to sign it:",
-        "   - audit_search(query) — after searching for patients",
-        "   - audit_view(patient_id, patient_name) — after opening a patient record",
-        "   - audit_update(patient_id, patient_name, field, old_value, new_value) — after saving changes",
-        "   - audit_delete(patient_id, patient_name) — after deleting a patient",
-        "   - audit_lab_review(patient_id, patient_name) — after reviewing labs/vitals",
-        "   - audit_appointments(patient_id, patient_name) — after checking appointments",
-        "   - audit_history(patient_id, patient_name) — after viewing change history",
-        "",
-        "RULES:",
-        "- Always use the BROWSER to interact with the portal — click, type, scroll",
-        "- Read data from what you see on the page, don't guess or hallucinate values",
-        "- Note old values BEFORE making edits so you can report them accurately in audit_update",
-        "- Sign every meaningful action into the audit chain",
-        "- When updating medications, type the FULL medication list (all meds, not just the changed one)",
-    ]
+PORTAL_SYSTEM_PROMPT = """You are {agent_name}, an AI medical records assistant.
 
-    # Add recalled memories if available
+You navigate the MedLedger Patient Portal in a real browser. The portal is already open.
+
+HOW TO WORK:
+1. You are on the portal at {portal_url}. If you see a login page, log in with username "demo" and password "demo123".
+2. Use the portal UI to accomplish the task — search for patients, click their names to view records, click Edit to modify fields, etc.
+3. IMPORTANT: After each significant action (search, view, update, etc.), call the corresponding audit_* tool to sign the action into the cryptographic audit chain. This is required for compliance.
+
+AUDIT TOOLS (call these AFTER doing the action in the browser):
+- audit_search(query) — after searching
+- audit_view(patient_name) — after viewing a patient record
+- audit_update(patient_name, field, old_value, new_value) — after editing a field
+- audit_history(patient_name) — after viewing history
+- audit_labs(patient_name) — after viewing lab results
+- audit_appointments(patient_name) — after viewing appointments
+
+RULES:
+- Navigate the portal using clicks, form inputs, and links — this is visible to the user watching.
+- Always call the audit tool after performing the corresponding browser action.
+- When updating medications, make sure to set the FULL medication string.
+- View a patient first before updating so you know current values.
+- Focus ONLY on what the user asked. Do not take extra actions.
+- When done, stop immediately.
+"""
+
+
+async def _build_system_prompt(agent_name: str, task: str, agent_id: str, step: int = 0, total_steps: int = 0) -> str:
+    """Build system prompt for portal-navigating agent."""
+    prompt = PORTAL_SYSTEM_PROMPT.format(agent_name=agent_name, portal_url=PORTAL_URL)
+
+    if step > 0:
+        prompt = prompt.replace(
+            f"You are {agent_name}, an AI medical records assistant.",
+            f"You are {agent_name}, step {step} of {total_steps} in a multi-agent workflow.",
+        )
+
+    # Recall relevant memories from supermemory
     mem_status = memory_status()
     if mem_status["status"] == "active":
         memories = await recall_context(agent_id, task, limit=3)
         if memories:
-            parts.append(f"\n--- Recalled Context (from past sessions) ---\n{memories}\n---")
+            prompt += f"\n--- Recalled Context (from past sessions) ---\n{memories}\n--- End Recalled Context ---"
 
-    return "\n".join(parts)
+    return prompt
 
 
-# ──────────────────────────── Auditing Agent (no browser) ────────────────────
+# ──────────────────────────── Auditing Agent ────────────────────────────
 
 async def run_audit_agent(broadcast_fn: Optional[Callable[[dict], Awaitable]] = None):
-    """Auditing agent — verifies chain integrity, checks for anomalies.
-    Runs without browser-use (pure data checks)."""
+    """
+    Auditing agent — verifies chain integrity, checks for anomalies,
+    and stores findings in memory. Runs without browser-use.
+    """
     agent_id = "auditor"
     findings = []
 
@@ -189,7 +241,7 @@ async def run_audit_agent(broadcast_fn: Optional[Callable[[dict], Awaitable]] = 
     else:
         findings.append(f"Chain integrity: FAILED at block {chain_status.get('broken_at')} — {chain_status.get('error')}")
 
-    # 2. Check for suspicious patterns
+    # 2. Check for suspicious patterns in audit log
     log = await get_full_log()
     delete_count = sum(1 for a in log if a["action_type"] == "DELETE")
     update_count = sum(1 for a in log if a["action_type"] == "UPDATE")
@@ -239,10 +291,11 @@ async def run_audit_agent(broadcast_fn: Optional[Callable[[dict], Awaitable]] = 
     if broadcast_fn:
         await broadcast_fn({"type": "action", **action})
 
-    # 4. Store and complete
+    # 4. Store audit findings in memory
     audit_summary = "\n".join(findings)
     await store_interaction(agent_id, "AUDIT", {"summary": audit_summary}, audit_summary)
 
+    # 5. Complete
     complete_action = await sign_action("TASK_COMPLETE", {
         "task": "Data integrity audit",
         "result": audit_summary,
@@ -273,9 +326,9 @@ async def run_agent_task(
     agent_name: str = "MedLedger Agent",
     api_key: str = None,
 ):
-    """Run a browser-use agent that navigates the patient portal."""
+    """Run a browser-use agent that navigates the patient portal with real clicks."""
     if not HAS_BROWSER_USE:
-        raise ImportError("browser-use and langchain-anthropic are required. Run: pip install browser-use langchain-anthropic")
+        raise ImportError("Agent deps not installed: browser-use and langchain-anthropic are required. Run: pip install browser-use langchain-anthropic")
 
     if api_key:
         os.environ["ANTHROPIC_API_KEY"] = api_key
@@ -291,25 +344,30 @@ async def run_agent_task(
     controller = Controller()
     register_audit_tools(controller, agent_id, broadcast_fn, action_count, patients_touched)
 
-    llm = ChatAnthropic(model_name="claude-sonnet-4-20250514", timeout=120, stop=None)
-    browser_session = BrowserSession(headless=True, disable_security=True)
+    llm = ChatAnthropic(model="claude-sonnet-4-20250514", timeout=120)
 
     system_msg = await _build_system_prompt(agent_name, task, agent_id)
 
+    browser_session = BrowserSession(
+        headless=True,
+        disable_security=True,
+    )
+
     agent = Agent(
-        task=task,
+        task=f"Go to {PORTAL_URL} and complete this task: {task}",
         llm=llm,
         controller=controller,
         browser_session=browser_session,
         extend_system_message=system_msg,
-        use_vision=True,
+        use_vision=False,
         max_actions_per_step=5,
     )
 
     try:
-        result = await agent.run()
+        result = await agent.run(max_steps=25)
         elapsed = round(time.time() - start_time, 1)
 
+        # Store completion in memory
         await store_interaction(agent_id, "TASK_COMPLETE", {"task": task}, str(result)[:300])
 
         if broadcast_fn:
@@ -326,8 +384,12 @@ async def run_agent_task(
                     "task": task,
                 },
             })
+    except Exception as e:
+        elapsed = round(time.time() - start_time, 1)
+        if broadcast_fn:
+            await broadcast_fn({"type": "error", "message": f"Agent error: {str(e)}", "agent_name": agent_name})
     finally:
-        await browser_session.close()
+        await browser_session.stop()
 
 
 # ──────────────────────────── Multi-Agent Workflow ────────────────────────────
@@ -337,8 +399,13 @@ async def run_multi_agent(
     broadcast_fn: Optional[Callable[[dict], Awaitable]] = None,
     api_key: str = None,
 ):
-    """Run multiple agents sequentially. Each agent navigates the portal independently.
-    All share one audit chain — agent B's actions link to agent A's last action."""
+    """
+    Run multiple agents sequentially. Each agent's actions are signed with its own
+    identity, but all share the same audit chain — so agent B's first action links
+    to agent A's last action. This creates a cross-signed, multi-agent audit trail.
+
+    agents_config: [{"name": "Triage Bot", "task": "..."}, {"name": "Updater Bot", "task": "..."}]
+    """
     if not HAS_BROWSER_USE:
         raise ImportError("browser-use and langchain-anthropic are required")
 
@@ -376,45 +443,49 @@ async def run_multi_agent(
         controller = Controller()
         register_audit_tools(controller, agent_id, broadcast_fn, action_count, patients_touched)
 
-        llm = ChatAnthropic(model_name="claude-sonnet-4-20250514", timeout=120, stop=None)
-        browser_session = BrowserSession(headless=True, disable_security=True)
+        llm = ChatAnthropic(model="claude-sonnet-4-20250514", timeout=120)
 
-        system_msg = await _build_system_prompt(agent_name, task, agent_id)
+        system_msg = await _build_system_prompt(agent_name, task, agent_id, step=i+1, total_steps=len(agents_config))
+
+        browser_session = BrowserSession(
+            headless=True,
+            disable_security=True,
+        )
 
         agent = Agent(
-            task=task,
+            task=f"Go to {PORTAL_URL} and complete this task: {task}",
             llm=llm,
             controller=controller,
             browser_session=browser_session,
             extend_system_message=system_msg,
-            use_vision=True,
+            use_vision=False,
             max_actions_per_step=5,
         )
 
         try:
-            result = await agent.run()
-            elapsed = round(time.time() - start_time, 1)
-            summary = {
-                "agent_name": agent_name,
-                "total_actions": action_count[0],
-                "patients_touched": len(patients_touched),
-                "elapsed_seconds": elapsed,
-                "task": task,
-            }
-            results.append(summary)
-
-            await store_interaction(agent_id, "TASK_COMPLETE", {"task": task}, str(result)[:300])
-
-            if broadcast_fn:
-                complete_action = await sign_action(
-                    "TASK_COMPLETE",
-                    {"task": task, "result": str(result), "agent_step": i + 1},
-                    agent_id=agent_id,
-                )
-                await broadcast_fn({"type": "action", **complete_action})
-                await broadcast_fn({"type": "task_complete", "result": str(result), "agent_name": agent_name, "summary": summary})
+            result = await agent.run(max_steps=25)
         finally:
-            await browser_session.close()
+            await browser_session.stop()
+        elapsed = round(time.time() - start_time, 1)
+        summary = {
+            "agent_name": agent_name,
+            "total_actions": action_count[0],
+            "patients_touched": len(patients_touched),
+            "elapsed_seconds": elapsed,
+            "task": task,
+        }
+        results.append(summary)
+
+        await store_interaction(agent_id, "TASK_COMPLETE", {"task": task}, str(result)[:300])
+
+        if broadcast_fn:
+            complete_action = await sign_action(
+                "TASK_COMPLETE",
+                {"task": task, "result": str(result), "agent_step": i + 1},
+                agent_id=agent_id,
+            )
+            await broadcast_fn({"type": "action", **complete_action})
+            await broadcast_fn({"type": "task_complete", "result": str(result), "agent_name": agent_name, "summary": summary})
 
     if broadcast_fn:
         await broadcast_fn({"type": "multi_agent_complete", "results": results})
