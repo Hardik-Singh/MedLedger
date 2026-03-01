@@ -24,10 +24,10 @@ const RISK_LEVELS = {
 };
 
 const TASK_TEMPLATES = [
-  { label: 'Patient Lookup', icon: '\u{1F50D}', task: "Search for Sam Altman and view his full patient record" },
-  { label: 'Medication Update', icon: '\u{1F48A}', task: "Find Sam Altman's record, update his medication from Vitamin C 1000mg daily to Emergen-C 1000mg daily" },
-  { label: 'Full Audit Demo', icon: '\u{1F4CB}', task: "Find Sam Altman, view his record, update his medication from Vitamin C 1000mg daily to Emergen-C 1000mg daily, then search for all patients with seasonal allergies" },
-  { label: 'Multi-Patient Search', icon: '\u{1F465}', task: "Search for patients with allergies, then search for patients with headaches, and view the details of Garry Tan" },
+  { label: 'Lookup', icon: '\u{1F50D}', task: "Look up Sam Altman's patient record and check his current medications" },
+  { label: 'Update Meds', icon: '\u{1F48A}', task: "Sam Altman is switching from Claritin to Zyrtec for his allergies — update his record" },
+  { label: 'Allergy Check', icon: '\u{1F927}', task: "Which patients have seasonal allergies? Pull up their records" },
+  { label: 'Audit Trail', icon: '\u{1F4CB}', task: "Check on Paul Graham, update his eye drops prescription to Refresh Optive, then look at his version history" },
 ];
 
 function truncHash(h, len = 12) {

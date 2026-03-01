@@ -45,7 +45,22 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
 
     # ── Custom tools — each one signs its action before executing ──
 
-    @controller.action("Search for a patient by name or MRN")
+    @controller.action("List all patients in the system with their basic info. Use this to get an overview of the patient registry.")
+    async def list_patients():
+        action = await sign_action("SEARCH", {"query": "*all*"}, agent_id=agent_id)
+        action_count[0] += 1
+        if broadcast_fn:
+            await broadcast_fn({"type": "action", **action})
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT id, first_name, last_name, mrn, diagnosis, medications FROM patients WHERE deleted = 0 ORDER BY last_name",
+            )
+            results = [dict(row) for row in await cursor.fetchall()]
+        return json.dumps(results, indent=2)
+
+    @controller.action("Search for a patient by name, MRN, diagnosis, or medication. Use this to find any patient — you can search by partial name, condition, drug name, etc.")
     async def search_patient(query: str):
         action = await sign_action("SEARCH", {"query": query}, agent_id=agent_id)
         action_count[0] += 1
@@ -55,13 +70,13 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT id, first_name, last_name, mrn, diagnosis FROM patients WHERE (first_name || ' ' || last_name LIKE ? OR mrn LIKE ?) AND deleted = 0",
-                (f"%{query}%", f"%{query}%"),
+                "SELECT id, first_name, last_name, mrn, diagnosis, medications FROM patients WHERE (first_name || ' ' || last_name LIKE ? OR mrn LIKE ? OR diagnosis LIKE ? OR medications LIKE ?) AND deleted = 0",
+                (f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"),
             )
             results = [dict(row) for row in await cursor.fetchall()]
         return json.dumps(results, indent=2)
 
-    @controller.action("View a patient's full details")
+    @controller.action("View a patient's full record including demographics, diagnosis, medications, allergies, insurance, and contact info")
     async def view_patient(patient_id: int):
         action = await sign_action("VIEW", {"patient_id": patient_id}, agent_id=agent_id)
         action_count[0] += 1
@@ -77,7 +92,7 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
                 return "Patient not found"
             return json.dumps(dict(row), indent=2)
 
-    @controller.action("Update a specific field of a patient record")
+    @controller.action("Update a patient record field. field must be one of: first_name, last_name, dob, phone, insurance, allergies, diagnosis, medications. The value should be the complete new value for that field.")
     async def update_patient(patient_id: int, field: str, value: str):
         allowed = ["first_name", "last_name", "dob", "phone", "insurance", "allergies", "diagnosis", "medications"]
         if field not in allowed:
@@ -116,7 +131,7 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
 
         return f"Updated {field} from '{old_value}' to '{value}'"
 
-    @controller.action("Delete a patient record (soft delete)")
+    @controller.action("Delete a patient record. This is a soft delete — the record is marked as deleted but preserved for audit purposes.")
     async def delete_patient(patient_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
@@ -148,7 +163,7 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
 
         return f"Patient {old['first_name']} {old['last_name']} deleted"
 
-    @controller.action("Get version history for a patient")
+    @controller.action("Get the full version history for a patient — shows all past changes, who changed what, and when")
     async def get_patient_history(patient_id: int):
         action = await sign_action("HISTORY", {"patient_id": patient_id}, agent_id=agent_id)
         action_count[0] += 1
@@ -174,8 +189,17 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
         disable_security=True,
     ))
 
+    system_prompt = (
+        f"You are {agent_name}, an AI medical records assistant with access to the MedLedger patient portal. "
+        "You can search for patients, view their records, update information, check version history, and more. "
+        "Use the custom tools provided — they are faster and more reliable than navigating the browser UI. "
+        "When updating medications, replace the FULL medication field value (not just one drug). "
+        "Be thorough: if someone asks you to find something, search for it. If they ask to change something, "
+        "view the record first so you know the current values, then update. Always confirm what you did."
+    )
+
     agent = Agent(
-        task=task,
+        task=f"{system_prompt}\n\nTask: {task}",
         llm=llm,
         controller=controller,
         browser=browser,

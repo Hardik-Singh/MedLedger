@@ -148,8 +148,8 @@ async def patient_list(request: Request):
         db.row_factory = aiosqlite.Row
         if q:
             cursor = await db.execute(
-                "SELECT * FROM patients WHERE (first_name || ' ' || last_name LIKE ? OR mrn LIKE ?) AND deleted = 0",
-                (f"%{q}%", f"%{q}%"),
+                "SELECT * FROM patients WHERE (first_name || ' ' || last_name LIKE ? OR mrn LIKE ? OR diagnosis LIKE ? OR medications LIKE ?) AND deleted = 0",
+                (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"),
             )
         else:
             cursor = await db.execute("SELECT * FROM patients WHERE deleted = 0 ORDER BY last_name ASC")

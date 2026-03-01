@@ -95,25 +95,28 @@ uvicorn backend.main:app --port 8000 --reload
 cd frontend && npm install && npm start
 ```
 
-## Demo Script (3-4 minutes)
+## Using It
 
-This is the exact flow for recording a demo:
+Just type whatever you want the agent to do in plain English. It handles anything:
 
-| Step | Action | What judges see |
-|------|--------|-----------------|
-| 1 | Open dashboard at `localhost:3000` | Empty state — "No actions yet" |
-| 2 | Click **"Full Audit Demo"** template | Task auto-fills |
-| 3 | Hit **Run Agent** | Actions stream in real-time, each with hash + signature |
-| 4 | Switch to **Clinical View** | Same actions, plain English: "Searched for Sam Altman", "Updated medication..." |
-| 5 | Switch back to **Auditor View** | Crypto chain visible — hashes linking to each other |
-| 6 | Click an action card | **Chain Explorer** opens — full payload, signature, chain visualization |
-| 7 | Click **Verify Chain** | "CHAIN INTACT" |
-| 8 | Click **Tamper Demo** | Record corrupted, "CHAIN BROKEN" with red alert |
-| 9 | Click **Restore Chain** | Back to "CHAIN INTACT" |
-| 10 | Open portal, find Sam Altman | Version history shows the medication change with timestamp |
-| 11 | Click **Export** | Download full audit log as JSON |
+```
+"Look up Sam Altman and update his allergy meds to Zyrtec"
+"Who has a headache? Change Dalton's prescription to Excedrin"
+"Show me everyone on ibuprofen"
+"Delete Kevin Hale's record"
+"Check Paul Graham's visit history"
+"Find all patients with allergies and list their medications"
+```
 
-**Demo task:** "Find Sam Altman's record, update his medication from Vitamin C 1000mg daily to Emergen-C 1000mg daily, then search for all patients with seasonal allergies"
+Use the template buttons for quick starts, or type your own. The agent figures out the steps — search, view, update, whatever's needed. Every action gets signed and chained automatically.
+
+### Things to try
+
+- **Toggle views** — Auditor view shows crypto hashes, Clinical view shows plain English
+- **Click any action** — Chain Explorer shows full payload, signature, and chain links
+- **Tamper Demo** — Corrupt a record, watch the chain break, restore it
+- **Export** — Download the full verified audit log as JSON
+- **Name your agent** — Set a custom name in the agent bar, it shows in every audit entry
 
 ## Patient Data
 
