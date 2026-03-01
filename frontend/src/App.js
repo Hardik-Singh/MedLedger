@@ -260,21 +260,23 @@ function App() {
             const real = prev.filter(r => !String(r.id).startsWith('seed'));
             return [run, ...real];
           });
-          setOpenRunId(run.id);
-          setViewTab('human');
+          // don't auto-open run detail — keep portal visible during execution
+          setOpenRunId(null);
         }
 
         if (d.type === 'action') {
           const { type, ...action } = d;
           setRuns(prev => prev.map(r => r.id === curRunRef.current ? { ...r, actions:[...r.actions, action] } : r));
           showPortalStatus(action.action_type);
-          setPortalKey(k => k + 1);
+          // only reload portal iframe on data-changing actions (not reads)
+          if (['UPDATE','DELETE','SCHEDULE'].includes(action.action_type)) setPortalKey(k => k + 1);
           fetch(`${API_URL}/audit/verify`).then(r=>r.json()).then(setChain).catch(()=>{});
         }
 
         if (d.type === 'task_complete') {
           setRuns(prev => prev.map(r => r.id === curRunRef.current ? { ...r, status:'complete', summary:d.summary } : r));
           setRunning(false); curRunRef.current = null; setPortalStatus(null);
+          setPortalKey(k => k + 1); // refresh portal to show final state
         }
         if (d.type === 'multi_agent_complete') { setRunning(false); curRunRef.current = null; setPortalStatus(null); }
         if (d.type === 'error') { setRunning(false); curRunRef.current = null; setPortalStatus(null); }
