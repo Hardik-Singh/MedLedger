@@ -48,3 +48,8 @@ class AgentTask(BaseModel):
     task: str
     agent_name: Optional[str] = "MedLedger Agent"
     api_key: Optional[str] = None
+
+
+class MultiAgentTask(BaseModel):
+    agents: list[dict]  # [{"name": "Triage Bot", "task": "..."}, ...]
+    api_key: Optional[str] = None

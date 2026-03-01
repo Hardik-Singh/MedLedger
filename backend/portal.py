@@ -3,13 +3,24 @@ MedLedger Portal — Agent-Native EHR
 Mock patient portal on port 8001. Server-rendered HTML for browser-use DOM access.
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 import aiosqlite
 from backend.database import DB_PATH, init_db
 
-app = FastAPI(title="MedLedger Portal")
+
+@asynccontextmanager
+async def lifespan(app):
+    await init_db()
+    yield
+
+
+app = FastAPI(title="MedLedger Portal", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ──────────────────────────── HTML Templates ────────────────────────────
 
@@ -173,7 +184,7 @@ async def patient_list(request: Request):
     <div class="card">
       <h2 style="margin-bottom:16px;color:#1e3a5f;">Patient Registry</h2>
       <form method="get" action="/patients/search" class="search-box">
-        <input type="text" name="q" placeholder="Search by patient name or MRN..." {search_val} id="search-input" aria-label="Search patients">
+        <input type="text" name="q" placeholder="Search by name, MRN, diagnosis, or medication..." {search_val} id="search-input" aria-label="Search patients">
         <button type="submit" class="btn btn-primary">Search</button>
       </form>
       <table>
@@ -257,11 +268,14 @@ async def patient_detail(patient_id: int, request: Request):
         <div><label>Date of Birth</label><p>{p['dob']}</p></div>
         <div><label>Phone</label><p>{p['phone']}</p></div>
         <div><label>Insurance</label><p>{p['insurance']}</p></div>
+        <div><label>Blood Type</label><p>{p['blood_type']}</p></div>
+        <div><label>Emergency Contact</label><p>{p['emergency_contact']}</p></div>
       </div>
       <hr style="margin:20px 0;border:none;border-top:1px solid #e2e8f0;">
       <div><label>Diagnosis</label><p class="diagnosis">{p['diagnosis']}</p></div>
       <div style="margin-top:16px;"><label>Medications</label><p>{p['medications']}</p></div>
       <div style="margin-top:16px;"><label>Allergies</label><p>{p['allergies']}</p></div>
+      <div style="margin-top:16px;"><label>Clinical Notes</label><p>{p['notes']}</p></div>
       <div style="margin-top:16px;"><label>Last Visit</label><p>{p['last_visit']}</p></div>
     </div>
     {history_section}
@@ -300,6 +314,7 @@ async def edit_form(patient_id: int, request: Request):
         </div>
         <div style="margin-top:16px;"><label for="diagnosis">Diagnosis</label><input type="text" name="diagnosis" id="diagnosis" value="{p['diagnosis']}"></div>
         <div style="margin-top:16px;"><label for="medications">Medications</label><textarea name="medications" id="medications" rows="3">{p['medications']}</textarea></div>
+        <div style="margin-top:16px;"><label for="notes">Clinical Notes</label><textarea name="notes" id="notes" rows="4">{p['notes']}</textarea></div>
         <button type="submit" class="btn btn-primary" style="margin-top:8px;">Save Changes</button>
       </form>
     </div>
@@ -319,7 +334,7 @@ async def update_patient(patient_id: int, request: Request):
             return RedirectResponse("/patients?msg=Patient+not+found", status_code=302)
 
         now = datetime.now(timezone.utc).isoformat()
-        fields = ["first_name", "last_name", "dob", "phone", "insurance", "allergies", "diagnosis", "medications"]
+        fields = ["first_name", "last_name", "dob", "phone", "insurance", "allergies", "diagnosis", "medications", "notes"]
         for field in fields:
             new_val = form.get(field, "")
             old_val = old[field] or ""
@@ -380,6 +395,3 @@ async def api_patient_history(patient_id: int):
 
 # ──────────────────────────── Startup ────────────────────────────
 
-@app.on_event("startup")
-async def startup():
-    await init_db()

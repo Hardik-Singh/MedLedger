@@ -1,3 +1,8 @@
+"""
+MedLedger Audit Chain — ECDSA P-256 signing + SHA-256 hash-chaining.
+Supports multiple agent identities (ARIA, DELTA, custom) with a shared chain.
+"""
+
 import hashlib
 import json
 import os
@@ -12,40 +17,37 @@ import aiosqlite
 from backend.database import DB_PATH
 
 KEY_DIR = os.path.join(os.path.dirname(__file__), "keys")
-PRIVATE_KEY_PATH = os.path.join(KEY_DIR, "agent_private.pem")
-PUBLIC_KEY_PATH = os.path.join(KEY_DIR, "agent_public.pem")
 
-_private_key = None
-_public_key = None
+# ──────────────────────────── Key Management ────────────────────────────
+
+_keys = {}  # agent_id -> (private_key, public_key)
 _last_hash = "GENESIS"
 
 
-def _init_keys():
-    global _private_key, _public_key
-    os.makedirs(KEY_DIR, exist_ok=True)
+def _load_or_create_keypair(agent_id: str):
+    """Load or generate an ECDSA P-256 keypair for an agent."""
+    if agent_id in _keys:
+        return _keys[agent_id]
 
-    if os.path.exists(PRIVATE_KEY_PATH):
-        with open(PRIVATE_KEY_PATH, "rb") as f:
-            _private_key = serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
-        _public_key = _private_key.public_key()
+    os.makedirs(KEY_DIR, exist_ok=True)
+    safe_name = agent_id.replace(" ", "-").lower()
+    priv_path = os.path.join(KEY_DIR, f"{safe_name}_private.pem")
+    pub_path = os.path.join(KEY_DIR, f"{safe_name}_public.pem")
+
+    if os.path.exists(priv_path):
+        with open(priv_path, "rb") as f:
+            priv = serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
+        pub = priv.public_key()
     else:
-        _private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-        _public_key = _private_key.public_key()
-        with open(PRIVATE_KEY_PATH, "wb") as f:
-            f.write(
-                _private_key.private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                )
-            )
-        with open(PUBLIC_KEY_PATH, "wb") as f:
-            f.write(
-                _public_key.public_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PublicFormat.SubjectPublicKeyInfo,
-                )
-            )
+        priv = ec.generate_private_key(ec.SECP256R1(), default_backend())
+        pub = priv.public_key()
+        with open(priv_path, "wb") as f:
+            f.write(priv.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        with open(pub_path, "wb") as f:
+            f.write(pub.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+
+    _keys[agent_id] = (priv, pub)
+    return priv, pub
 
 
 def _canonical_json(obj: dict) -> str:
@@ -53,42 +55,43 @@ def _canonical_json(obj: dict) -> str:
 
 
 def _compute_hash(record: dict) -> str:
-    canonical = _canonical_json(record)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hashlib.sha256(_canonical_json(record).encode("utf-8")).hexdigest()
 
 
-def _sign_hash(hash_hex: str) -> str:
+def _sign_hash(private_key, hash_hex: str) -> str:
     hash_bytes = bytes.fromhex(hash_hex)
-    signature = _private_key.sign(hash_bytes, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
-    return signature.hex()
+    sig = private_key.sign(hash_bytes, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+    return sig.hex()
 
 
-def _verify_signature(hash_hex: str, signature_hex: str) -> bool:
+def _verify_signature(public_key, hash_hex: str, signature_hex: str) -> bool:
     try:
-        hash_bytes = bytes.fromhex(hash_hex)
-        signature_bytes = bytes.fromhex(signature_hex)
-        _public_key.verify(signature_bytes, hash_bytes, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        public_key.verify(bytes.fromhex(signature_hex), bytes.fromhex(hash_hex), ec.ECDSA(utils.Prehashed(hashes.SHA256())))
         return True
     except Exception:
         return False
 
 
+# ──────────────────────────── Chain Operations ────────────────────────────
+
 async def init_chain():
     global _last_hash
-    _init_keys()
+    # Pre-load default keypair
+    _load_or_create_keypair("medledger-agent")
+    _load_or_create_keypair("aria")
+    _load_or_create_keypair("delta")
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT hash FROM audit_log ORDER BY rowid DESC LIMIT 1")
         row = await cursor.fetchone()
-        if row:
-            _last_hash = row["hash"]
-        else:
-            _last_hash = "GENESIS"
+        _last_hash = row["hash"] if row else "GENESIS"
 
 
-async def sign_action(action_type: str, payload: dict, agent_id: str = "medledger-agent-1") -> dict:
+async def sign_action(action_type: str, payload: dict, agent_id: str = "medledger-agent") -> dict:
     global _last_hash
+
+    priv, _ = _load_or_create_keypair(agent_id)
 
     action_id = str(uuid.uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -103,12 +106,11 @@ async def sign_action(action_type: str, payload: dict, agent_id: str = "medledge
     }
 
     action_hash = _compute_hash(record)
-    signature = _sign_hash(action_hash)
+    signature = _sign_hash(priv, action_hash)
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT INTO audit_log (id, timestamp, action_type, payload, prev_hash, agent_id, hash, signature)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            "INSERT INTO audit_log (id, timestamp, action_type, payload, prev_hash, agent_id, hash, signature) VALUES (?,?,?,?,?,?,?,?)",
             (action_id, timestamp, action_type, json.dumps(payload), _last_hash, agent_id, action_hash, signature),
         )
         await db.commit()
@@ -129,7 +131,6 @@ async def sign_action(action_type: str, payload: dict, agent_id: str = "medledge
 
 
 async def verify_chain() -> dict:
-    _init_keys()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM audit_log ORDER BY rowid ASC")
@@ -140,94 +141,45 @@ async def verify_chain() -> dict:
 
     expected_prev = "GENESIS"
     for idx, row in enumerate(rows):
+        # Check chain link
         if row["prev_hash"] != expected_prev:
             return {
-                "intact": False,
-                "total_actions": len(rows),
+                "intact": False, "total_actions": len(rows),
                 "last_verified": rows[idx - 1]["timestamp"] if idx > 0 else None,
                 "broken_at": idx,
                 "error": f"Chain broken at action {idx}: expected prev_hash {expected_prev[:16]}... got {row['prev_hash'][:16]}...",
             }
-
+        # Check hash integrity
         record = {
-            "id": row["id"],
-            "timestamp": row["timestamp"],
-            "action_type": row["action_type"],
-            "payload": json.loads(row["payload"]),
-            "prev_hash": row["prev_hash"],
-            "agent_id": row["agent_id"],
+            "id": row["id"], "timestamp": row["timestamp"], "action_type": row["action_type"],
+            "payload": json.loads(row["payload"]), "prev_hash": row["prev_hash"], "agent_id": row["agent_id"],
         }
-        computed_hash = _compute_hash(record)
-        if computed_hash != row["hash"]:
+        computed = _compute_hash(record)
+        if computed != row["hash"]:
             return {
-                "intact": False,
-                "total_actions": len(rows),
+                "intact": False, "total_actions": len(rows),
                 "last_verified": rows[idx - 1]["timestamp"] if idx > 0 else None,
                 "broken_at": idx,
-                "error": f"Hash mismatch at action {idx}: record may have been tampered with",
+                "error": f"Hash mismatch at action {idx}: record tampered",
             }
-
-        if not _verify_signature(row["hash"], row["signature"]):
+        # Check signature
+        _, pub = _load_or_create_keypair(row["agent_id"])
+        if not _verify_signature(pub, row["hash"], row["signature"]):
             return {
-                "intact": False,
-                "total_actions": len(rows),
+                "intact": False, "total_actions": len(rows),
                 "last_verified": rows[idx - 1]["timestamp"] if idx > 0 else None,
                 "broken_at": idx,
-                "error": f"Signature verification failed at action {idx}: key mismatch or tampering detected",
+                "error": f"Signature failed at action {idx}: key mismatch or tampering",
             }
-
         expected_prev = row["hash"]
 
     return {
-        "intact": True,
-        "total_actions": len(rows),
-        "last_verified": rows[-1]["timestamp"],
-        "broken_at": None,
-        "error": None,
+        "intact": True, "total_actions": len(rows),
+        "last_verified": rows[-1]["timestamp"], "broken_at": None, "error": None,
     }
 
 
-_tamper_backup = {}  # stores original payload for restore
-
-
-async def tamper_record() -> str:
-    """Intentionally corrupt the last audit record for demo. Returns tampered record id."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM audit_log ORDER BY rowid DESC LIMIT 1")
-        row = await cursor.fetchone()
-        if not row:
-            return None
-
-        record_id = row["id"]
-        _tamper_backup[record_id] = row["payload"]
-
-        # Corrupt the payload — change it so hash won't match
-        tampered = json.loads(row["payload"])
-        tampered["TAMPERED"] = True
-        tampered["original_overwritten"] = "This record was modified outside the audit system"
-        await db.execute("UPDATE audit_log SET payload = ? WHERE id = ?", (json.dumps(tampered), record_id))
-        await db.commit()
-
-    return record_id
-
-
-async def restore_record() -> bool:
-    """Restore the tampered record from backup."""
-    if not _tamper_backup:
-        return False
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        for record_id, original_payload in _tamper_backup.items():
-            await db.execute("UPDATE audit_log SET payload = ? WHERE id = ?", (original_payload, record_id))
-        await db.commit()
-
-    _tamper_backup.clear()
-    return True
-
-
 async def get_full_log() -> list:
-    _init_keys()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM audit_log ORDER BY rowid ASC")
@@ -236,18 +188,47 @@ async def get_full_log() -> list:
     results = []
     expected_prev = "GENESIS"
     for row in rows:
-        verified = _verify_signature(row["hash"], row["signature"]) and row["prev_hash"] == expected_prev
-        record = {
-            "id": row["id"],
-            "timestamp": row["timestamp"],
-            "action_type": row["action_type"],
-            "payload": json.loads(row["payload"]),
-            "prev_hash": row["prev_hash"],
-            "agent_id": row["agent_id"],
-            "hash": row["hash"],
-            "signature": row["signature"],
+        _, pub = _load_or_create_keypair(row["agent_id"])
+        verified = _verify_signature(pub, row["hash"], row["signature"]) and row["prev_hash"] == expected_prev
+        results.append({
+            "id": row["id"], "timestamp": row["timestamp"], "action_type": row["action_type"],
+            "payload": json.loads(row["payload"]), "prev_hash": row["prev_hash"],
+            "agent_id": row["agent_id"], "hash": row["hash"], "signature": row["signature"],
             "verified": verified,
-        }
-        results.append(record)
+        })
         expected_prev = row["hash"]
     return results
+
+
+# ──────────────────────────── Tamper Simulation ────────────────────────────
+
+_tamper_backup = {}
+
+
+async def tamper_record() -> str:
+    """Corrupt the last audit record for demo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM audit_log ORDER BY rowid DESC LIMIT 1")
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        _tamper_backup[row["id"]] = row["payload"]
+        tampered = json.loads(row["payload"])
+        tampered["TAMPERED"] = True
+        tampered["injected"] = "This record was modified outside the audit system"
+        await db.execute("UPDATE audit_log SET payload = ? WHERE id = ?", (json.dumps(tampered), row["id"]))
+        await db.commit()
+    return row["id"]
+
+
+async def restore_record() -> bool:
+    """Restore tampered record."""
+    if not _tamper_backup:
+        return False
+    async with aiosqlite.connect(DB_PATH) as db:
+        for rid, payload in _tamper_backup.items():
+            await db.execute("UPDATE audit_log SET payload = ? WHERE id = ?", (payload, rid))
+        await db.commit()
+    _tamper_backup.clear()
+    return True
