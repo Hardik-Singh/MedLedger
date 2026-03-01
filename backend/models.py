@@ -46,3 +46,5 @@ class ChainVerification(BaseModel):
 
 class AgentTask(BaseModel):
     task: str
+    agent_name: Optional[str] = "MedLedger Agent"
+    api_key: Optional[str] = None

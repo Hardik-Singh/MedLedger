@@ -187,6 +187,45 @@ async def verify_chain() -> dict:
     }
 
 
+_tamper_backup = {}  # stores original payload for restore
+
+
+async def tamper_record() -> str:
+    """Intentionally corrupt the last audit record for demo. Returns tampered record id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM audit_log ORDER BY rowid DESC LIMIT 1")
+        row = await cursor.fetchone()
+        if not row:
+            return None
+
+        record_id = row["id"]
+        _tamper_backup[record_id] = row["payload"]
+
+        # Corrupt the payload — change it so hash won't match
+        tampered = json.loads(row["payload"])
+        tampered["TAMPERED"] = True
+        tampered["original_overwritten"] = "This record was modified outside the audit system"
+        await db.execute("UPDATE audit_log SET payload = ? WHERE id = ?", (json.dumps(tampered), record_id))
+        await db.commit()
+
+    return record_id
+
+
+async def restore_record() -> bool:
+    """Restore the tampered record from backup."""
+    if not _tamper_backup:
+        return False
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        for record_id, original_payload in _tamper_backup.items():
+            await db.execute("UPDATE audit_log SET payload = ? WHERE id = ?", (original_payload, record_id))
+        await db.commit()
+
+    _tamper_backup.clear()
+    return True
+
+
 async def get_full_log() -> list:
     _init_keys()
     async with aiosqlite.connect(DB_PATH) as db:

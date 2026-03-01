@@ -22,11 +22,24 @@ except ImportError:
     HAS_BROWSER_USE = False
 
 
-async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awaitable]] = None):
+async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awaitable]] = None, agent_name: str = "MedLedger Agent", api_key: str = None):
     """Run a browser-use agent with cryptographically signed tool calls."""
 
     if not HAS_BROWSER_USE:
         raise ImportError("browser-use and langchain-anthropic must be installed")
+
+    # Set API key if provided from dashboard
+    if api_key:
+        os.environ["ANTHROPIC_API_KEY"] = api_key
+
+    agent_id = agent_name.lower().replace(" ", "-")
+    start_time = __import__("time").time()
+    action_count = [0]
+    patients_touched = set()
+
+    # Broadcast agent start
+    if broadcast_fn:
+        await broadcast_fn({"type": "agent_start", "agent_name": agent_name, "task": task})
 
     controller = Controller()
 
@@ -34,7 +47,8 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
 
     @controller.action("Search for a patient by name or MRN")
     async def search_patient(query: str):
-        action = await sign_action("SEARCH", {"query": query})
+        action = await sign_action("SEARCH", {"query": query}, agent_id=agent_id)
+        action_count[0] += 1
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
 
@@ -49,7 +63,9 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
 
     @controller.action("View a patient's full details")
     async def view_patient(patient_id: int):
-        action = await sign_action("VIEW", {"patient_id": patient_id})
+        action = await sign_action("VIEW", {"patient_id": patient_id}, agent_id=agent_id)
+        action_count[0] += 1
+        patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
 
@@ -81,7 +97,9 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
                 "old_value": old_value,
                 "new_value": value,
                 "patient_name": f"{old['first_name']} {old['last_name']}",
-            })
+            }, agent_id=agent_id)
+            action_count[0] += 1
+            patients_touched.add(patient_id)
             if broadcast_fn:
                 await broadcast_fn({"type": "action", **action})
 
@@ -111,7 +129,9 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
                 "patient_id": patient_id,
                 "patient_name": f"{old['first_name']} {old['last_name']}",
                 "mrn": old["mrn"],
-            })
+            }, agent_id=agent_id)
+            action_count[0] += 1
+            patients_touched.add(patient_id)
             if broadcast_fn:
                 await broadcast_fn({"type": "action", **action})
 
@@ -130,7 +150,9 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
 
     @controller.action("Get version history for a patient")
     async def get_patient_history(patient_id: int):
-        action = await sign_action("HISTORY", {"patient_id": patient_id})
+        action = await sign_action("HISTORY", {"patient_id": patient_id}, agent_id=agent_id)
+        action_count[0] += 1
+        patients_touched.add(patient_id)
         if broadcast_fn:
             await broadcast_fn({"type": "action", **action})
 
@@ -162,9 +184,20 @@ async def run_agent_task(task: str, broadcast_fn: Optional[Callable[[dict], Awai
 
     try:
         result = await agent.run()
+        elapsed = round(__import__("time").time() - start_time, 1)
         if broadcast_fn:
-            action = await sign_action("TASK_COMPLETE", {"task": task, "result": str(result)})
+            action = await sign_action("TASK_COMPLETE", {"task": task, "result": str(result)}, agent_id=agent_id)
             await broadcast_fn({"type": "action", **action})
-            await broadcast_fn({"type": "task_complete", "result": str(result)})
+            await broadcast_fn({
+                "type": "task_complete",
+                "result": str(result),
+                "agent_name": agent_name,
+                "summary": {
+                    "total_actions": action_count[0] + 1,
+                    "patients_touched": len(patients_touched),
+                    "elapsed_seconds": elapsed,
+                    "task": task,
+                },
+            })
     finally:
         await browser.close()

@@ -4,16 +4,16 @@ import os
 DB_PATH = os.path.join(os.path.dirname(__file__), "medledger.db")
 
 SEED_PATIENTS = [
-    ("John", "Smith", "1958-03-14", "MRN-001042", "Type 2 Diabetes Mellitus", "Metformin 500mg BID, Lisinopril 10mg daily", "Penicillin", "2026-02-15", "(555) 234-5678", "Blue Cross Blue Shield"),
-    ("Maria", "Garcia", "1975-08-22", "MRN-001087", "Hypertension, Hyperlipidemia", "Amlodipine 5mg daily, Atorvastatin 20mg daily", "Sulfa drugs", "2026-02-20", "(555) 345-6789", "Aetna PPO"),
-    ("Robert", "Johnson", "1962-11-30", "MRN-001123", "Chronic Kidney Disease Stage 3", "Losartan 50mg daily, Sodium Bicarbonate 650mg TID", "None known", "2026-01-28", "(555) 456-7890", "Medicare Part B"),
-    ("Emily", "Chen", "1990-04-05", "MRN-001156", "Generalized Anxiety Disorder", "Sertraline 100mg daily, Buspirone 10mg BID", "Latex", "2026-02-25", "(555) 567-8901", "United Healthcare"),
-    ("James", "Williams", "1945-07-19", "MRN-001198", "Atrial Fibrillation, CHF NYHA Class II", "Apixaban 5mg BID, Metoprolol 25mg BID, Furosemide 20mg daily", "Aspirin", "2026-02-10", "(555) 678-9012", "Medicare Advantage"),
-    ("Sarah", "Patel", "1983-12-01", "MRN-001234", "Rheumatoid Arthritis", "Methotrexate 15mg weekly, Folic acid 1mg daily, Prednisone 5mg daily", "NSAIDs", "2026-02-18", "(555) 789-0123", "Cigna"),
-    ("Michael", "Brown", "1970-09-15", "MRN-001267", "Major Depressive Disorder, Type 2 Diabetes", "Duloxetine 60mg daily, Metformin 1000mg BID, Glipizide 5mg daily", "Codeine", "2026-02-22", "(555) 890-1234", "Anthem Blue Cross"),
-    ("Lisa", "Thompson", "1955-02-28", "MRN-001301", "COPD, Osteoporosis", "Tiotropium 18mcg inhaled daily, Albuterol PRN, Alendronate 70mg weekly", "Erythromycin", "2026-01-30", "(555) 901-2345", "Humana"),
-    ("David", "Martinez", "1988-06-10", "MRN-001345", "Crohn's Disease", "Adalimumab 40mg every 2 weeks, Mesalamine 800mg TID", "None known", "2026-02-12", "(555) 012-3456", "Kaiser Permanente"),
-    ("Jennifer", "Lee", "1972-10-25", "MRN-001389", "Breast Cancer - Stage IIA (in remission)", "Tamoxifen 20mg daily, Calcium/Vitamin D supplement", "Iodine contrast", "2026-02-08", "(555) 123-4567", "UnitedHealth Group"),
+    ("Sam", "Altman", "1985-04-22", "MRN-001042", "Seasonal Allergies", "Claritin 10mg daily, Flonase nasal spray", "None known", "2026-02-15", "(555) 234-5678", "Blue Cross Blue Shield"),
+    ("Paul", "Graham", "1964-11-13", "MRN-001087", "Mild Eye Strain", "Artificial tears PRN, Blue-light glasses prescription", "None known", "2026-02-20", "(555) 345-6789", "Aetna PPO"),
+    ("Jessica", "Livingston", "1971-08-09", "MRN-001123", "Common Cold", "Vitamin C 1000mg daily, Zinc lozenges PRN, rest", "Penicillin", "2026-01-28", "(555) 456-7890", "United Healthcare"),
+    ("Garry", "Tan", "1982-06-30", "MRN-001156", "Caffeine Withdrawal Headaches", "Ibuprofen 400mg PRN, gradual caffeine taper plan", "None known", "2026-02-25", "(555) 567-8901", "Cigna"),
+    ("Michael", "Seibel", "1982-02-02", "MRN-001198", "Runner's Knee (Patellofemoral Syndrome)", "Ibuprofen 200mg PRN, physical therapy 2x/week, knee brace", "Sulfa drugs", "2026-02-10", "(555) 678-9012", "Kaiser Permanente"),
+    ("Dalton", "Caldwell", "1980-01-15", "MRN-001234", "Mild Tension Headache", "Acetaminophen 500mg PRN, stress management techniques", "Aspirin", "2026-02-18", "(555) 789-0123", "Anthem Blue Cross"),
+    ("Jared", "Friedman", "1986-07-20", "MRN-001267", "Seasonal Allergies, Mild Sunburn", "Zyrtec 10mg daily, Aloe vera gel topical, SPF 50 sunscreen", "None known", "2026-02-22", "(555) 890-1234", "Blue Cross Blue Shield"),
+    ("Gustaf", "Alstromer", "1985-03-05", "MRN-001301", "Tennis Elbow (Lateral Epicondylitis)", "Naproxen 250mg BID, elbow strap, ice therapy 3x/day", "NSAIDs", "2026-01-30", "(555) 901-2345", "Humana"),
+    ("Kevin", "Hale", "1981-12-18", "MRN-001345", "Mild Sprained Ankle", "RICE protocol, Ibuprofen 400mg TID, ankle wrap", "Latex", "2026-02-12", "(555) 012-3456", "United Healthcare"),
+    ("Adora", "Cheung", "1987-09-14", "MRN-001389", "Hiccups (Persistent, 3 days)", "Chlorpromazine 25mg PRN, breathing exercises, peppermint tea", "None known", "2026-02-08", "(555) 123-4567", "Aetna PPO"),
 ]
 
 
